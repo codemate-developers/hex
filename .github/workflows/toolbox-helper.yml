@@ -1,0 +1,193 @@
+name: Toolbox helper
+
+# CodeMate Toolbox pins one commit of this fork and ships its helper and
+# TypeScript SDK together. This builds both from that commit and publishes
+# them as the prerelease `toolbox-<12-character sha>`:
+#
+#   hex-linux-x64, hex-linux-arm64          the bare executables
+#   hex-win32-x64.exe, hex-win32-arm64.exe  (Windows GUI subsystem)
+#   hex-sdk.tar.gz                          sdk/ as Toolbox stages it
+#   LICENSE, THIRD_PARTY_NOTICES.md
+#   toolbox-manifest.json                   commit, versions, file digests
+#   SHA256SUMS
+#
+# Toolbox's scripts/sync-vendor-binaries.js downloads the release named by
+# its pin and refuses any file whose digest differs from the manifest.
+# Executables come from build-desktop.yml as test builds (HEX_TEST_BUILD), so
+# they never update themselves. macOS needs a signed, notarized helper and is
+# not built here yet.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag, or commit to build; the dispatched ref when empty
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolbox-helper-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      short: ${{ steps.resolve.outputs.short }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - id: resolve
+        run: |
+          short=$(git rev-parse --short=12 HEAD)
+          {
+            echo "sha=$(git rev-parse HEAD)"
+            echo "short=$short"
+            echo "version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "hex") | .version')"
+            echo "tag=toolbox-$short"
+          } >> "$GITHUB_OUTPUT"
+
+  desktop:
+    needs: resolve
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      sha: ${{ needs.resolve.outputs.sha }}
+      version: ${{ needs.resolve.outputs.version }}
+      test-build: true
+      artifact-prefix: toolbox-${{ needs.resolve.outputs.short }}
+      retention-days: 7
+
+  sdk:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Check, test, and build
+        working-directory: sdk/typescript
+        run: |
+          bun run check
+          bun run test
+          bun run build
+      # The layout Toolbox stages (scripts/sync-hex.js): dist/ plus a
+      # package.json that makes Node load it as ESM.
+      - name: Pack
+        working-directory: sdk/typescript
+        run: |
+          staging="$RUNNER_TEMP/sdk"
+          mkdir -p "$staging" "$RUNNER_TEMP/out"
+          cp -R dist/. "$staging/"
+          jq '{name, version, type: "module"}' package.json > "$staging/package.json"
+          tar -czf "$RUNNER_TEMP/out/hex-sdk.tar.gz" -C "$staging" .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: toolbox-${{ needs.resolve.outputs.short }}-sdk
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve, desktop, sdk]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      SHA: ${{ needs.resolve.outputs.sha }}
+      SHORT: ${{ needs.resolve.outputs.short }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: toolbox-${{ needs.resolve.outputs.short }}-*
+          path: ${{ runner.temp }}/artifacts
+      # Each build artifact's SHA256SUMS must be the one its job reported,
+      # and every file must match it.
+      - name: Verify the build artifacts
+        env:
+          DIGESTS: >-
+            linux-x86_64=${{ needs.desktop.outputs.linux-x64-digest }}
+            linux-aarch64=${{ needs.desktop.outputs.linux-arm64-digest }}
+            windows-x86_64=${{ needs.desktop.outputs.windows-x64-digest }}
+            windows-aarch64=${{ needs.desktop.outputs.windows-arm64-digest }}
+        run: |
+          for entry in $DIGESTS; do
+            directory="$RUNNER_TEMP/artifacts/toolbox-$SHORT-${entry%%=*}"
+            actual=$(sha256sum "$directory/SHA256SUMS" | cut -d' ' -f1)
+            [ "$actual" = "${entry#*=}" ] || { echo "::error::${entry%%=*}: SHA256SUMS digest $actual, expected ${entry#*=}"; exit 1; }
+            (cd "$directory" && sha256sum --check --strict SHA256SUMS)
+          done
+      - name: Assemble the release
+        run: |
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          artifacts="$RUNNER_TEMP/artifacts/toolbox-$SHORT"
+          cp "$artifacts-linux-x86_64/hex-$VERSION-linux-x64" "$out/hex-linux-x64"
+          cp "$artifacts-linux-aarch64/hex-$VERSION-linux-arm64" "$out/hex-linux-arm64"
+          cp "$artifacts-windows-x86_64/hex-$VERSION-windows-x64.exe" "$out/hex-win32-x64.exe"
+          cp "$artifacts-windows-aarch64/hex-$VERSION-windows-arm64.exe" "$out/hex-win32-arm64.exe"
+          cp "$artifacts-sdk/hex-sdk.tar.gz" "$out/"
+          cp LICENSE THIRD_PARTY_NOTICES.md "$out/"
+          chmod 755 "$out"/hex-linux-*
+          sdk_version=$(jq -r .version sdk/typescript/package.json)
+          digest() { sha256sum "$out/$1" | cut -d' ' -f1; }
+          helper() { jq -n --arg file "$1" --arg sha256 "$(digest "$1")" '{file: $file, sha256: $sha256}'; }
+          jq -n \
+            --arg commit "$SHA" --arg version "$VERSION" --arg sdkVersion "$sdk_version" \
+            --argjson linux_x64 "$(helper hex-linux-x64)" \
+            --argjson linux_arm64 "$(helper hex-linux-arm64)" \
+            --argjson win32_x64 "$(helper hex-win32-x64.exe)" \
+            --argjson win32_arm64 "$(helper hex-win32-arm64.exe)" \
+            --argjson sdk "$(helper hex-sdk.tar.gz)" \
+            --argjson license "$(helper LICENSE)" \
+            --argjson notices "$(helper THIRD_PARTY_NOTICES.md)" \
+            '{commit: $commit, version: $version, sdkVersion: $sdkVersion,
+              helpers: {"linux-x64": $linux_x64, "linux-arm64": $linux_arm64,
+                        "win32-x64": $win32_x64, "win32-arm64": $win32_arm64},
+              sdk: $sdk, notices: [$license, $notices]}' > "$out/toolbox-manifest.json"
+          (cd "$out" && sha256sum -- * > SHA256SUMS)
+          cat "$out/toolbox-manifest.json"
+      # Toolbox ships the bare executable, not Hex's .deb, so its packages'
+      # dependencies are not installed for it: list what it loads, and start
+      # it on a clean Debian 12, the oldest supported distribution.
+      - name: Check the Linux helper's runtime libraries
+        run: |
+          {
+            echo '### hex-linux-x64 dynamic libraries'
+            echo '```'
+            ldd "$RUNNER_TEMP/release/hex-linux-x64"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          docker run --rm -v "$RUNNER_TEMP/release:/release:ro" debian:12 sh -euc '
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends libasound2 libssl3 libvulkan1 libxkbcommon0 \
+              libxkbcommon-x11-0 libx11-6 libxcb1 libxcursor1 libxi6 libwayland-client0 > /dev/null
+            missing=$(ldd /release/hex-linux-x64 | grep "not found" || true)
+            [ -z "$missing" ] || { echo "Missing libraries: $missing"; exit 1; }
+            /release/hex-linux-x64 --version'
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" "$RUNNER_TEMP"/release/* \
+            --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease \
+            --title "Toolbox helper $SHORT" \
+            --notes "Hex $VERSION helper and TypeScript SDK for CodeMate Toolbox, built from $SHA. Pin it in Toolbox's config/hex/pin.json."
