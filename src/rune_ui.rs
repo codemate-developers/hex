@@ -114,7 +114,7 @@ pub(crate) fn run_app(
     shutdown: &'static std::sync::atomic::AtomicBool,
 ) -> Result<(), String> {
     use crate::linux::service::{Activation, Control};
-    rune::set_app_id(crate::linux::portal::APP_ID);
+    rune::set_app_id(crate::linux::portal::app_id());
     let mut app = self::app(Some(host.clone()))
         .args(window_args())
         .windowless();

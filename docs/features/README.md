@@ -2596,6 +2596,9 @@ TypeScript SDK + local service             // macOS, Linux, Windows
 │   └── Linux, Windows -> No packaged helper; command: hex service --embedded
 ├── Caller streams audio -> Running app's /streams -> Partials, segments, final
 │   └── Dictation first; uses the loaded model only (docs/streams.md)
+├── SDK transcriber.stream() -> /streams bound to its model and language
+│   └── hex service [--embedded] -> Prepared GGUF model shared with batch inference
+│       └── Switching runtimes releases the previous service-owned engine
 ├── Running app's /transcriptions -> Listener's engine when it holds the model
 │   ├── Otherwise the service's own copy of the requested model
 │   ├── Whole-clip run -> A Whisper clip's silent edges dropped, and a window

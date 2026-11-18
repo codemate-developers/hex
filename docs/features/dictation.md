@@ -2396,6 +2396,17 @@ failure. The Sounds and onboarding previews use the same renderer; their
 surrounding windows keep their normal appearance. It was the `dot-scope` experiment (#264) until 2026-10-29,
 when it replaced the glossy capsule, which Omarchy users on X called a
 "static red thingy"; the capsule's shader and HUD Lab styles are deleted. It is the t422 prototype's look A with its values.
+Settings' `hud_style` (`hex settings`; no pane yet, CodeMate Toolbox sets it)
+draws `bars` instead: up to 13 rounded level bars 6 pt apart
+(`dot_scope::BARS`, `BAR_PITCH`), each showing the voice 70 ms older than its
+neighbour nearer the middle, read from the trace Dot scope draws
+(`Scope::bars`), with a light sweeping bars at rest while Hex works. The CPU
+writes each bar's height and brightness into the first slots of the dot
+buffer and `ears.z` tells `rune_hud.wgsl` to draw bars; the plate, palette,
+springs, and states are Dot scope's. Bars too near the narrower working
+plate's ends fade out. The notch indicator's ears ignore the style. Checked by
+`bars_follow_the_voice_outward_and_rest_under_a_sweep_while_working` (the
+model only); drawn bars were not yet compared against a golden.
 Linux and Windows draw it in a 304×80 pt window at the HUD's edge (no
 menu-bar or notch placement), on the display under the pointer when the
 capture starts, as macOS does (#486; `rune_hud::display`). Windows and X11
@@ -2689,3 +2700,44 @@ TextEdit process were stopped afterward.
 - **Native checks require deliberate setup:** permissions, model, keyboard,
   microphone, output device, and a disposable text target must be recorded. This
   map does not authorize operating the installed app or injecting global input.
+
+## Toolbox-owned desktop runtime
+
+The CodeMate fork accepts `HEX_TOOLBOX_EMBEDDED=1` with `hex service --embedded`,
+an explicit `HEX_APPLICATION_SUPPORT_DIR`, and `HEX_TOOLBOX_SHORTCUT`.
+This opt-in starts the existing platform desktop host, shortcut listener,
+microphone/capture/transcription/output path, and shared Rune HUD. It uses
+Toggle mode, opens the microphone only during capture, and disables Paste Last's
+separate binding and unrelated capture/meeting/screenshot shortcuts. It has no Hex tray, settings window, updater, or login item.
+The authenticated endpoint is handed to the SDK on stdout, without publishing
+`local-api.json`; parent-pipe closure stops the runtime with a bounded exit.
+Linux portals use `com.codemate.cm-toolbox.dictation`, leaving installed Hex's
+portal shortcuts and user configuration alone. Existing compositor restrictions
+still apply; this adds no new keyboard or paste implementation.
+
+Toolbox supplies its Settings UI. SDK `client.control()` sends the existing
+versioned `/control` protocol for status, model preparation and configuration.
+Host-audio batch and streams share the listener's engine. `/dictations` still
+returns text without pasting; the shortcut/`dictation` control path pastes.
+
+Checks: `toolbox::tests::toolbox_uses_hex_shortcut_validation_and_toggle_capture`,
+SDK `desktop-control.test.ts`, and Toolbox's `tests/dictation.test.js`.
+These checks do not establish physical microphone behavior or signed macOS and
+Windows permission attribution; those require native platform smoke tests.
+
+Observed November 17, 2026 on Linux/X11 with Vulkan and synthetic WAV input:
+Toolbox's controller/service launched the native listener; its configured global
+shortcut started recording, the original native HUD became visible, the second
+press finished and pasted into a disposable focused Electron textarea, Escape
+cancelled without changing it, disabling stopped the helper, and saved enablement
+restored it. `scripts/test-dictation-desktop.js` in Toolbox reproduces this check.
+No physical microphone was opened. Focus loss stopped one attempt before further
+input; the subsequent complete run passed.
+
+On the tested Hyprland session, the portal started but returned no Dictation
+trigger. `listener.shortcut_backend` and each grant's `unconfirmed` preserve that
+distinction for consumers. Choosing a key cannot force the compositor to assign
+it; Toolbox reports the prerequisite. No compositor configuration was changed.
+Rust `toolbox`, `local_api` (54), and `control::host` (4) checks, strict Clippy,
+and 95 TypeScript SDK tests passed. This is Linux fixture evidence, not signed
+macOS/Windows or physical-input proof.

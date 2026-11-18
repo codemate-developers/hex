@@ -908,7 +908,8 @@ pub(crate) struct DotUniforms {
     plate_layout: [f32; 4],
     island: [f32; 4],
     field: [f32; 4],
-    /// The notch indicator's done and failed, 0 to 1.
+    /// The notch indicator's done and failed, 0 to 1, and 1 for the Bars
+    /// style.
     ears: [f32; 4],
 }
 
@@ -942,8 +943,16 @@ impl DotUniforms {
             opacity: pose.opacity,
             scale: pose.scale,
             softness: pose.softness,
-            pitch: frame.tuning.spacing,
-            columns: frame.columns as f32,
+            pitch: if frame.bars {
+                dot_scope::BAR_PITCH
+            } else {
+                frame.tuning.spacing
+            },
+            columns: if frame.bars {
+                dot_scope::BARS as f32
+            } else {
+                frame.columns as f32
+            },
             rows: frame.rows as f32,
             glow: pose.glow,
             grid: pose.grid,
@@ -970,7 +979,12 @@ impl DotUniforms {
                 Some(island) if island.ears => [island.notch[0] / 2.0, 1.0, pose.level, pose.clock],
                 _ => [field_radius(layout, pose), 0.0, 0.0, 0.0],
             },
-            ears: [pose.done, pose.fail, 0.0, 0.0],
+            ears: [
+                pose.done,
+                pose.fail,
+                if frame.bars { 1.0 } else { 0.0 },
+                0.0,
+            ],
         }
     }
 }

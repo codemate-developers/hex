@@ -594,6 +594,9 @@ pub fn update_label(status: &crate::desktop::host::DesktopUpdateStatus) -> &'sta
 pub struct ListenerReport {
     pub running: bool,
     pub status: String,
+    /// registered (native keys), portal, commands, or unregistered.
+    #[serde(default)]
+    pub shortcut_backend: String,
     /// What a Wayland shortcuts portal granted, in the desktop's own keys,
     /// including keys changed only in its settings (#723); empty elsewhere.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -605,6 +608,8 @@ pub struct GrantedShortcutReport {
     pub name: String,
     /// `None` when the desktop refused it or names no key.
     pub trigger: Option<String>,
+    #[serde(default)]
+    pub unconfirmed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

@@ -82,6 +82,7 @@ static CALENDAR_SETTINGS: OnceLock<RwLock<CalendarSettings>> = OnceLock::new();
 static MICROPHONE_POLICY: AtomicU8 = AtomicU8::new(0);
 static CUSTOM_TRANSFORMATIONS_SELECTED: AtomicBool = AtomicBool::new(false);
 static INDICATOR_POSITION: AtomicU8 = AtomicU8::new(0);
+static HUD_STYLE: AtomicU8 = AtomicU8::new(0);
 static HOTKEYS: OnceLock<RwLock<AppliedHotkeys>> = OnceLock::new();
 static HOTKEY_CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
@@ -166,6 +167,18 @@ pub enum IndicatorPosition {
     Top = 0,
     Bottom = 1,
     Hidden = 2,
+}
+
+/// How the recording HUD draws the voice.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum HudStyle {
+    /// Dot scope's braided traces through a field of dots.
+    #[default]
+    Dots = 0,
+    /// Level bars, the newest in the middle, swept by light while Hex works.
+    Bars = 1,
 }
 
 /// Which release-service channel a direct install updates from
@@ -358,6 +371,7 @@ pub struct AppSettings {
     /// The interface language code; `None` follows the system language.
     pub ui_language: Option<String>,
     pub indicator_position: IndicatorPosition,
+    pub hud_style: HudStyle,
     pub updates: UpdateSettings,
     /// The shared vocabulary (`crate::dictation::vocabulary`). Left out of the file
     /// while empty, so settings without one stay as they were.
@@ -482,6 +496,7 @@ impl Default for AppSettings {
             mouse_shortcut_notice: false,
             ui_language: None,
             indicator_position: IndicatorPosition::default(),
+            hud_style: HudStyle::default(),
             updates: UpdateSettings::default(),
             vocabulary: Vec::new(),
             vocabulary_boost: crate::dictation::vocabulary::VocabularyBoost::default(),
@@ -790,6 +805,7 @@ impl AppSettings {
         crate::feedback::set_sound_set(self.sound_theme);
         crate::desktop::i18n::apply(self.ui_language.as_deref());
         INDICATOR_POSITION.store(self.indicator_position as u8, Ordering::Relaxed);
+        HUD_STYLE.store(self.hud_style as u8, Ordering::Relaxed);
         #[cfg(not(target_os = "macos"))]
         crate::transcription::local_transcriber::set_device(self.transcription_device);
         RECORDING_DUCK_VOLUME.store(self.recording_duck_volume.to_bits(), Ordering::Relaxed);
@@ -1340,6 +1356,14 @@ pub fn indicator_position() -> IndicatorPosition {
         1 => IndicatorPosition::Bottom,
         2 => IndicatorPosition::Hidden,
         _ => IndicatorPosition::Top,
+    }
+}
+
+/// How the recording HUD draws the voice, as last saved.
+pub fn hud_style() -> HudStyle {
+    match HUD_STYLE.load(Ordering::Relaxed) {
+        1 => HudStyle::Bars,
+        _ => HudStyle::Dots,
     }
 }
 

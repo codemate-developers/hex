@@ -173,8 +173,11 @@ pub struct DotFrame {
     pub tuning: Tuning,
     pub columns: usize,
     pub rows: usize,
-    /// (brightness, freshness) per dot, row by row, as normalized u16s.
+    /// (brightness, freshness) per dot, row by row, as normalized u16s; with
+    /// `bars`, (height, brightness) per bar instead.
     pub dots: Vec<[u16; 2]>,
+    /// Settings' HUD style is Bars (`Scope::bars`).
+    pub bars: bool,
 }
 
 /// The middle of `rune_hud.wgsl`'s fade of dots near the field's edge
@@ -454,17 +457,20 @@ impl IndicatorModel {
             },
         );
         self.active = visible || !self.scope.settled();
+        let bars = crate::app_settings::hud_style() == crate::app_settings::HudStyle::Bars;
+        let normalized =
+            |value: &[f32; 2]| value.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16);
         DotFrame {
             pose: self.scope.pose(),
             tuning: self.scope.tuning(),
             columns: self.scope.columns(),
             rows: self.scope.rows(),
-            dots: self
-                .scope
-                .dots()
-                .iter()
-                .map(|value| value.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16))
-                .collect(),
+            dots: if bars {
+                self.scope.bars().iter().map(normalized).collect()
+            } else {
+                self.scope.dots().iter().map(normalized).collect()
+            },
+            bars,
         }
     }
 }

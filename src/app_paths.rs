@@ -142,12 +142,32 @@ pub fn init_process_logging(shutdown: &'static AtomicBool) -> Result<PathBuf> {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("hex=info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_writer(std::io::stderr.and(Mutex::new(process_log)))
+        .with_writer((|| LossyStderr).and(Mutex::new(process_log)))
         .init();
     log_panics();
     crate::desktop::log_trim::start(&log_dir);
     ctrlc::set_handler(|| shutdown.store(true, Ordering::Relaxed))?;
     Ok(log_dir)
+}
+
+/// stderr for diagnostics only: `process.log` is the record. A failed write is
+/// dropped, never reported, because tracing-subscriber reports a writer error
+/// with `eprintln!`, which panics on the same dead stderr, and the panic hook
+/// below then logs while this thread still holds `process.log`'s lock. A
+/// `hex service --embedded` whose host exited (stderr closed) deadlocked so,
+/// and its lease thread's exit waited on the same lock.
+struct LossyStderr;
+
+impl std::io::Write for LossyStderr {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let _ = std::io::stderr().write_all(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let _ = std::io::stderr().flush();
+        Ok(())
+    }
 }
 
 /// Records every panic in `process.log` before the installed report runs.
@@ -189,6 +209,9 @@ pub fn personal_commands_workspace() -> Result<PathBuf> {
 
 /// The per-user config folder holding `hex.config.ts` on every OS: `~/.config/hex`, or `~/.config/hex-test` for `Hex Test.app`.
 fn user_config_dir() -> Result<PathBuf> {
+    if crate::toolbox::enabled() {
+        return Ok(support_dir()?.join("config"));
+    }
     let home = home_dir().ok_or_else(|| eyre!("home directory is unavailable"))?;
     Ok(user_config_dir_in(&home, is_macos_test_build()))
 }
@@ -312,5 +335,20 @@ mod tests {
             user_config_dir_in(home, true),
             home.join(".config").join("hex-test")
         );
+    }
+}
+
+#[cfg(test)]
+mod lossy_stderr_tests {
+    use std::io::Write;
+
+    #[test]
+    fn a_stderr_write_always_reports_the_whole_buffer() {
+        // tracing-subscriber treats a short or failed write as an error it
+        // reports through stderr; this writer must never produce one.
+        let mut writer = super::LossyStderr;
+        assert_eq!(writer.write(b"").unwrap(), 0);
+        assert_eq!(writer.write(b"lossy stderr probe\n").unwrap(), 19);
+        writer.flush().unwrap();
     }
 }

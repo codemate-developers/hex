@@ -7,6 +7,9 @@ import {
   decodeHealth,
   decodeModels,
   decodeProgress,
+  decodeStreamEvent,
+  decodeStreamResult,
+  decodeStreamStart,
   decodeTranscription,
   type EmbeddedEndpoint,
 } from "./protocol.js"
@@ -17,6 +20,11 @@ import type {
   ModelId,
   PrepareModelOptions,
   RequestOptions,
+  StreamCreateOptions,
+  StreamEvent,
+  StreamFinishOptions,
+  StreamHandle,
+  StreamResult,
   TranscriptionRequest,
   TranscriptionResult,
 } from "./types.js"
@@ -75,6 +83,46 @@ const combineSignals = (first: AbortSignal, second?: AbortSignal): AbortSignal =
 
 const languageSuffix = (language?: string): string =>
   language === undefined ? "" : `?${new URLSearchParams({ language })}`
+
+/** The host's per-request audio limit (`MAX_AUDIO_BYTES` in `local_api/streams.rs`). */
+const MAX_STREAM_AUDIO_BYTES = 256 * 1024
+
+/** The bytes of one push, copied out of any larger buffer the view shares. */
+const streamBytes = (
+  samples: Float32Array | Int16Array | Uint8Array,
+  sampleFormat: "f32le" | "s16le",
+): Uint8Array => {
+  if (samples instanceof Float32Array && sampleFormat !== "f32le") {
+    throw new HexError("request-failed", "Float32Array audio needs an f32le stream")
+  }
+  if (samples instanceof Int16Array && sampleFormat !== "s16le") {
+    throw new HexError("request-failed", "Int16Array audio needs an s16le stream")
+  }
+  const sampleBytes = sampleFormat === "f32le" ? 4 : 2
+  if (samples.byteLength % sampleBytes !== 0) {
+    throw new HexError("request-failed", "HEX stream audio must hold whole samples")
+  }
+  if (samples instanceof Float32Array) {
+    // Typed arrays use the platform byte order; the host reads little-endian.
+    const bytes = new Uint8Array(samples.byteLength)
+    const view = new DataView(bytes.buffer)
+    samples.forEach((sample, index) => view.setFloat32(index * 4, sample, true))
+    return bytes
+  }
+  if (samples instanceof Int16Array) {
+    const bytes = new Uint8Array(samples.byteLength)
+    const view = new DataView(bytes.buffer)
+    samples.forEach((sample, index) => view.setInt16(index * 2, sample, true))
+    return bytes
+  }
+  return samples
+}
+
+/** Drops the oldest partial first, so a full buffer never loses committed text. */
+const evictStreamEvent = (events: Array<StreamEvent>) => {
+  const partial = events.findIndex((event) => event.type === "partial")
+  events.splice(partial >= 0 ? partial : 0, 1)
+}
 
 export const makeClient = (
   endpoint: EmbeddedEndpoint,
@@ -187,6 +235,7 @@ export const makeClient = (
     bufferSize: number,
     failureMessage: string,
     consume: (push: (value: A) => void, signal: AbortSignal) => Promise<void>,
+    evict: (values: Array<A>) => void = (values) => void values.shift(),
   ): AsyncIterable<A> => {
     const values: Array<A> = []
     const controller = new AbortController()
@@ -218,7 +267,7 @@ export const makeClient = (
         waiter.resolve({ value, done: false })
         return
       }
-      if (values.length >= bufferSize) values.shift()
+      if (values.length >= bufferSize) evict(values)
       values.push(value)
     }
     const start = () => {
@@ -390,5 +439,154 @@ export const makeClient = (
     }
   }
 
-  return { health, capabilities, models: { list, prepare }, transcribe, dictation: { start: startDictation } }
+  const streamHeaders = (ownerToken: string) => ({ "x-hex-stream-token": ownerToken })
+
+  const createStream = async (options: StreamCreateOptions = {}): Promise<StreamHandle> => {
+    const sampleFormat = options.sampleFormat ?? "f32le"
+    const start = decodeStreamStart(await json(await request("/streams", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sampleFormat,
+        sampleRate: 16_000,
+        ...(options.model === undefined ? {} : { model: options.model }),
+        ...(options.language === undefined ? {} : { language: options.language }),
+      }),
+    }, options.signal)))
+    const { id, ownerToken } = start
+    const headers = streamHeaders(ownerToken)
+    const events = boundedStream<StreamEvent>(256, "HEX stream event stream failed", async (push, streamSignal) => {
+      const { response, signal } = await request(`/streams/${id}/events`, { headers }, streamSignal)
+      await consumeSse(response, signal, "stream", (data) => {
+        if (data === "") return
+        let value: unknown
+        try {
+          value = JSON.parse(data)
+        } catch (cause) {
+          throw new HexError("invalid-response", "HEX returned a malformed stream event", { cause })
+        }
+        const event = decodeStreamEvent(value)
+        push(event)
+        return event.type === "final" || event.type === "error" || event.type === "cancelled"
+      })
+    }, evictStreamEvent)
+    let ended = false
+    let result: StreamResult | undefined
+    let finishInFlight: Promise<StreamResult> | undefined
+    let cancelInFlight: Promise<void> | undefined
+    // Audio renews the lease too; the heartbeat covers a paused recorder.
+    const heartbeat = setInterval(() => {
+      void request(`/streams/${id}/heartbeat`, { method: "POST", headers }).catch(stopOnTerminalError)
+    }, Math.max(1_000, Math.floor(start.leaseMs / 3)))
+    const stopHeartbeat = () => {
+      clearInterval(heartbeat)
+      lifetime.removeEventListener("abort", stopHeartbeat)
+    }
+    const end = () => {
+      ended = true
+      stopHeartbeat()
+    }
+    const stopOnTerminalError = (error: unknown) => {
+      // 409 ended/failed/cancelled, 404 unknown, 401 revoked: nothing to renew.
+      // 504 finish timeout and transport failures leave the stream running.
+      if (error instanceof HexError && (error.status === 401 || error.status === 404 || error.status === 409)) end()
+    }
+    lifetime.addEventListener("abort", stopHeartbeat, { once: true })
+    if (lifetime.aborted) stopHeartbeat()
+
+    const pushAudio = async (
+      samples: Float32Array | Int16Array | Uint8Array,
+      pushOptions?: RequestOptions,
+    ): Promise<void> => {
+      if (ended) throw new HexError("request-failed", "HEX stream has ended")
+      const bytes = streamBytes(samples, start.sampleFormat)
+      const sampleBytes = start.sampleFormat === "f32le" ? 4 : 2
+      const limit = MAX_STREAM_AUDIO_BYTES - MAX_STREAM_AUDIO_BYTES % sampleBytes
+      for (let offset = 0; offset < bytes.byteLength; offset += limit) {
+        // Copy into an exact buffer: a Node Buffer's slice() is a view into
+        // a shared pool, whose .buffer would send the whole pool.
+        const chunk = new Uint8Array(bytes.subarray(offset, Math.min(offset + limit, bytes.byteLength)))
+        await request(`/streams/${id}/audio`, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/octet-stream" },
+          body: chunk.buffer,
+        }, pushOptions?.signal).catch((error: unknown) => {
+          stopOnTerminalError(error)
+          throw error
+        })
+      }
+    }
+
+    return {
+      id,
+      ownerToken,
+      model: start.model,
+      language: start.language,
+      sampleRate: 16_000,
+      sampleFormat: start.sampleFormat,
+      partials: start.partials,
+      leaseMs: start.leaseMs,
+      events,
+      push: pushAudio,
+      finish: (finishOptions: StreamFinishOptions = {}) => {
+        if (result !== undefined) return Promise.resolve(result)
+        if (ended) return Promise.reject(new HexError("request-failed", "HEX stream has ended"))
+        const query = finishOptions.process === undefined ? "" : `?${new URLSearchParams({ process: finishOptions.process })}`
+        finishInFlight ??= (async () => {
+          const finished = decodeStreamResult(await json(await request(
+            `/streams/${id}/finish${query}`,
+            { method: "POST", headers },
+            finishOptions.signal,
+          )))
+          result = finished
+          end()
+          return finished
+        })().catch((error: unknown) => {
+          stopOnTerminalError(error)
+          throw error
+        }).finally(() => {
+          finishInFlight = undefined
+        })
+        return finishInFlight
+      },
+      cancel: () => {
+        if (ended) return Promise.resolve()
+        cancelInFlight ??= request(`/streams/${id}/cancel`, { method: "POST", headers }).then(end, (error: unknown) => {
+          stopOnTerminalError(error)
+          throw error
+        }).finally(() => {
+          cancelInFlight = undefined
+        })
+        return cancelInFlight
+      },
+    }
+  }
+
+  return {
+    async control(command, options) {
+      const value = await json(await request("/control", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...command, version: 4 }),
+      }, options?.signal))
+      if (typeof value !== "object" || value === null ||
+          (value as Record<string, unknown>).version !== 4 ||
+          typeof (value as Record<string, unknown>).status !== "string") {
+        throw new HexError("invalid-response", "HEX returned an invalid desktop control response")
+      }
+      const reply = value as import("./types.js").DesktopReply
+      if (reply.status === "error") {
+        throw new HexError("request-failed", String(reply.message), {
+          remoteCode: String(reply.code),
+        })
+      }
+      return reply
+    },
+    health,
+    capabilities,
+    models: { list, prepare },
+    transcribe,
+    dictation: { start: startDictation },
+    streams: { create: createStream },
+  }
 }

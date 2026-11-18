@@ -428,23 +428,25 @@ pub(crate) fn run(
     activation: Option<Activation>,
 ) -> Result<()> {
     let mut server = linux_service::Server::bind()?;
-    // Installs before #579 named the entries hex.desktop.
-    if let Err(error) = crate::linux::icons::install() {
-        tracing::warn!(%error, "could not install Hex's icon");
+    if !crate::toolbox::enabled() {
+        // Installs before #579 named the entries hex.desktop.
+        if let Err(error) = crate::linux::icons::install() {
+            tracing::warn!(%error, "could not install Hex's icon");
+        }
+        if let Err(error) = crate::linux::portal::tidy_desktop_entries() {
+            tracing::warn!(%error, "could not move Hex's desktop entry");
+        }
+        if let Err(error) = crate::linux::portal::forget_legacy_gnome_shortcuts() {
+            tracing::warn!(%error, "could not remove Hex's old GNOME shortcuts");
+        }
+        if let Err(error) = crate::linux::login_item::tidy() {
+            tracing::warn!(%error, "could not tidy Hex's autostart entry");
+        }
+        // Off the main thread: the portal may take a moment to answer.
+        let _ = std::thread::Builder::new()
+            .name("hex-background-portal".into())
+            .spawn(crate::linux::login_item::announce_background);
     }
-    if let Err(error) = crate::linux::portal::tidy_desktop_entries() {
-        tracing::warn!(%error, "could not move Hex's desktop entry");
-    }
-    if let Err(error) = crate::linux::portal::forget_legacy_gnome_shortcuts() {
-        tracing::warn!(%error, "could not remove Hex's old GNOME shortcuts");
-    }
-    if let Err(error) = crate::linux::login_item::tidy() {
-        tracing::warn!(%error, "could not tidy Hex's autostart entry");
-    }
-    // Off the main thread: the portal may take a moment to answer.
-    let _ = std::thread::Builder::new()
-        .name("hex-background-portal".into())
-        .spawn(crate::linux::login_item::announce_background);
     crate::labs::log_launch();
     // Once, at startup: a Wayland session without wl-copy can record but
     // never copy or paste, and Settings and `hex status` repeat this warning.
@@ -492,9 +494,12 @@ pub(crate) fn run(
         }),
     );
     server.serve(published.clone(), control.clone());
-    let tray =
+    let tray = if crate::toolbox::enabled() {
+        None
+    } else {
         crate::linux::tray::start(host.clone(), published.clone(), control.clone(), shutdown)
-            .map(Arc::new);
+            .map(Arc::new)
+    };
     linux_service::notify("READY=1");
     tracing::info!(pid = std::process::id(), "Hex instance ready");
 
@@ -515,7 +520,7 @@ pub(crate) fn run(
                 )
             })?
     };
-    let reopen = take_reopen_marker();
+    let reopen = !crate::toolbox::enabled() && take_reopen_marker();
     let first = activation.or(reopen.then(Activation::default));
     run_window(&host, requests, first, shutdown);
     // A window Quit ends the window before the host thread notices, so bound
@@ -821,7 +826,7 @@ impl LinuxDesktopHost {
     /// listens with them on, for its current shortcuts; removed when Hex is
     /// disabled or they're turned off.
     fn sync_gnome_shortcuts(&mut self) {
-        if !self.settings_valid || !crate::linux::portal::gnome() {
+        if crate::toolbox::enabled() || !self.settings_valid || !crate::linux::portal::gnome() {
             return;
         }
         let requested = self.settings.gnome_keyboard_shortcuts && self.listen_when_ready;

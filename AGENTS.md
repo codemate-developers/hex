@@ -211,6 +211,9 @@ substitute for source inspection or a second roadmap.
   on the dictation engine's model when it is the one requested; otherwise the
   service loads its own (`WarmTranscriber` on macOS, `transcription::local_transcriber::WarmLocal`
   on Linux and Windows), released after a long clip when the engine holds it.
+  In `hex service [--embedded]` (`EngineSharing::OwnPrepared`) no app engine
+  exists, so a prepared GGUF model moves into an engine the service shares,
+  which `/streams` then uses.
 - `transcription/stream`: live `/streams` transcription of another app's
   pushed audio on the engine's loaded model: pause-cut windows fed through
   yielding engine streams that any dictation request closes, a bounded

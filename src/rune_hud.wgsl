@@ -1,6 +1,6 @@
 // The dictation HUD on every OS, drawn by `rune_hud.rs` through the HUD
 // overlay's Rune compositor: Dot scope, a plate of dots lit by
-// `dot_scope.rs`. Positions are in points from the window's middle, y down;
+// `dot_scope.rs`, or with Settings' `hud_style` bars, level bars. Positions are in points from the window's middle, y down;
 // colours are sRGB-encoded, premultiplied. `smoothstep` is spelled out
 // (`sstep`) because `coverage` relies on descending edges, which WGSL leaves
 // to the backend.
@@ -290,49 +290,75 @@ fn dot_scope_fragment(in: Varyings) -> @location(0) vec4f {
         composite(&result, mix(middle, u.base.rgb, t), strength * (1.0 - t) * shape);
     }
 
-    let columns = i32(u.columns + 0.5);
-    let rows = i32(u.rows + 0.5);
-    let pitch = u.pitch;
-    let center_offset = vec2f(f32(columns) - 1.0, f32(rows) - 1.0) * 0.5;
-    let i0 = i32(round(point.x / pitch + center_offset.x));
-    let j0 = i32(round(point.y / pitch + center_offset.y));
-    let unlit = select(0.085, 0.07, dark);
-    let full = select(1.0, 0.96, dark);
-    let curve = select(0.75, 0.9, dark);
-    let presence = 0.5 + 0.5 * max(u.live, u.cool);
-    for (var dj = -1; dj <= 1; dj++) {
+    if (u.ears.z > 0.5) {
+        // Bars: `columns` level bars `pitch` apart, half the pitch wide, each
+        // one's height and brightness in the dot buffer (`Scope::bars`). A
+        // bar too near the plate's ends fades out, as the dots do.
+        let count = i32(u.columns + 0.5);
+        let half_bar = u.pitch * 0.25;
+        let middle = (f32(count) - 1.0) * 0.5;
+        let nearest = i32(round(point.x / u.pitch + middle));
+        let color = mix(u.base.rgb, u.core.rgb, 0.35);
         for (var di = -1; di <= 1; di++) {
-            let i = i0 + di;
-            let j = j0 + dj;
-            if (i < 0 || j < 0 || i >= columns || j >= rows) {
+            let k = nearest + di;
+            if (k < 0 || k >= count) {
                 continue;
             }
-            let center = (vec2f(f32(i), f32(j)) - center_offset) * pitch;
-            let cap = -rounded_box(center, half_size, radius);
-            let mask = sstep(1.4, 4.6, cap);
-            if (mask <= 0.0) {
+            let x = (f32(k) - middle) * u.pitch;
+            let room = sstep(2.0, 6.0, half_size.x - abs(x) - half_bar);
+            if (room <= 0.0) {
                 continue;
             }
-            let value = dot_value(j * columns + i);
-            let power = max(value.x, 1e-5);
-            let fresh = value.y;
-            let row = abs(center.y) / half_size.y;
-            var floor_alpha = unlit * (1.0 - 0.7 * sstep(0.35, 0.95, row)) * presence * u.grid;
-            // A quiet centreline, not a plate-shaped bed of inactive dots.
-            if (dots_only) { floor_alpha = select(0.0, 0.26, j == rows / 2); }
-            let alpha = floor_alpha + (full - floor_alpha) * pow(power, curve * mix(1.4, 1.0, fresh));
-            let dot_radius = (0.25 + 0.17 * pow(power, 0.6))
-                * mix(1.0, mix(0.82, 1.0, fresh), sstep(0.03, 0.2, power)) * pitch;
-            let core = clamp(power * power * 1.1, 0.0, 0.9) * mix(0.3, 1.0, fresh);
-            let color = mix(u.base.rgb, u.core.rgb, core);
-            let from_center = length(point - center);
-            if (!dots_only && power > 0.05) {
-                composite(
-                    &result,
-                    color,
-                    0.132 * power * power * mask * shape * coverage(from_center - dot_radius * 2.0, aa));
+            let value = dot_value(k);
+            let half_height = max(half_bar, value.x * u.height * 0.4);
+            let bar = rounded_box(point - vec2f(x, 0.0), vec2f(half_bar, half_height), half_bar);
+            composite(&result, color, value.y * room * shape * coverage(bar, aa));
+        }
+    } else {
+        let columns = i32(u.columns + 0.5);
+        let rows = i32(u.rows + 0.5);
+        let pitch = u.pitch;
+        let center_offset = vec2f(f32(columns) - 1.0, f32(rows) - 1.0) * 0.5;
+        let i0 = i32(round(point.x / pitch + center_offset.x));
+        let j0 = i32(round(point.y / pitch + center_offset.y));
+        let unlit = select(0.085, 0.07, dark);
+        let full = select(1.0, 0.96, dark);
+        let curve = select(0.75, 0.9, dark);
+        let presence = 0.5 + 0.5 * max(u.live, u.cool);
+        for (var dj = -1; dj <= 1; dj++) {
+            for (var di = -1; di <= 1; di++) {
+                let i = i0 + di;
+                let j = j0 + dj;
+                if (i < 0 || j < 0 || i >= columns || j >= rows) {
+                    continue;
+                }
+                let center = (vec2f(f32(i), f32(j)) - center_offset) * pitch;
+                let cap = -rounded_box(center, half_size, radius);
+                let mask = sstep(1.4, 4.6, cap);
+                if (mask <= 0.0) {
+                    continue;
+                }
+                let value = dot_value(j * columns + i);
+                let power = max(value.x, 1e-5);
+                let fresh = value.y;
+                let row = abs(center.y) / half_size.y;
+                var floor_alpha = unlit * (1.0 - 0.7 * sstep(0.35, 0.95, row)) * presence * u.grid;
+                // A quiet centreline, not a plate-shaped bed of inactive dots.
+                if (dots_only) { floor_alpha = select(0.0, 0.26, j == rows / 2); }
+                let alpha = floor_alpha + (full - floor_alpha) * pow(power, curve * mix(1.4, 1.0, fresh));
+                let dot_radius = (0.25 + 0.17 * pow(power, 0.6))
+                    * mix(1.0, mix(0.82, 1.0, fresh), sstep(0.03, 0.2, power)) * pitch;
+                let core = clamp(power * power * 1.1, 0.0, 0.9) * mix(0.3, 1.0, fresh);
+                let color = mix(u.base.rgb, u.core.rgb, core);
+                let from_center = length(point - center);
+                if (!dots_only && power > 0.05) {
+                    composite(
+                        &result,
+                        color,
+                        0.132 * power * power * mask * shape * coverage(from_center - dot_radius * 2.0, aa));
+                }
+                composite(&result, color, alpha * mask * shape * coverage(from_center - dot_radius, aa));
             }
-            composite(&result, color, alpha * mask * shape * coverage(from_center - dot_radius, aa));
         }
     }
 

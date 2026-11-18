@@ -171,6 +171,40 @@ where the file comes from: `download`, `hex`, `imported`, or
 `found: owner/name@abcdef1` for a model another app downloaded to the Hugging Face
 cache, which Hex uses where it is.
 
+## Live Streams
+
+A transcriber can also transcribe audio live while the host records it. Push
+16 kHz mono samples as they arrive and read partial text from `events`:
+
+```ts
+const stream = await transcriber.stream()
+
+const preview = (async () => {
+  for await (const event of stream.events) {
+    if (event.type === "partial") updatePreview(event.stable + event.tentative)
+    if (event.type === "segment") commit(event.text)
+  }
+})()
+
+recorder.onSamples((samples: Float32Array) => void stream.push(samples))
+
+// When the user stops:
+const { text, segments, durationMs } = await stream.finish()
+await preview
+```
+
+`stream.partials` is `true` only when the loaded model can stream on its device
+(a Metal or Vulkan GPU); otherwise only `segment` events and the final arrive.
+`stable` text is committed; `tentative` text may still change, and a newer
+`partial` for the same `segment` replaces the previous one. The handle renews
+the host's ten-second lease every few seconds while open, so a paused recorder
+keeps its stream. One stream runs at a time (`stream-busy`), and streams never
+load a model. A `finish()` rejected with `stream-finish-timeout` leaves the
+stream running; call it again. Always `finish()` or `cancel()` explicitly. The
+low-level `client.streams.create()` takes an optional `model` and `language`,
+which must match what the host holds (`model-mismatch`). The contract is
+[`docs/streams.md`](https://github.com/anomalyco/hex/blob/dev/docs/streams.md).
+
 ## Connect to HEX Desktop
 
 Alternatively, reuse the microphone and engine owned by the running HEX desktop
@@ -230,3 +264,30 @@ observations automatically.
   `NSWorkspace`. Validate native packaging/signing in the final consuming app.
 - Never expose the startup bearer token to renderer or web content. Credentials
   are exchanged over the child pipe and used for authenticated loopback requests.
+
+## Toolbox-owned desktop runtime (CodeMate fork)
+
+The fork can launch Hex's existing desktop dictation loop as an SDK-owned child:
+
+```ts
+const host = await Hex.create({
+  command: [hexPath, "service", "--embedded"],
+  env: {
+    HEX_TOOLBOX_EMBEDDED: "1",
+    HEX_APPLICATION_SUPPORT_DIR: toolboxDataDir,
+    HEX_TOOLBOX_SHORTCUT: "ctrl+alt+space",
+  },
+})
+const status = await host.client.control({ command: "status" })
+// The native shortcut toggles recording and uses Hex's HUD and paste pipeline.
+await host.close()
+```
+
+This is an opt-in desktop runtime, separate from the transcription-only service.
+It needs a desktop session and the same permissions as Hex. Its endpoint uses
+the existing SDK handshake and parent lease; no separate Hex install is needed.
+`control()` validates control version 4 and carries native setting errors. The
+child owns microphone capture, the original Rune pill and focused-field paste.
+Do not call `/models/prepare` to create a second model: configure the desktop
+model through `control({ command: "model-install", model, language })` and wait
+for its listener to become ready before host-audio batch/stream requests.
