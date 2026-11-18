@@ -228,7 +228,21 @@ export interface StreamHandle {
   cancel(): Promise<void>
 }
 
+export type DesktopCommand =
+  | { readonly command: "status" }
+  | { readonly command: "model-install"; readonly model: string; readonly language?: string }
+  | { readonly command: "settings-apply"; readonly values: Readonly<Record<string, unknown>> }
+  | { readonly command: "dictation"; readonly action: "start" | "stop" | "toggle" | "cancel" }
+
+export interface DesktopReply {
+  readonly version: number
+  readonly status: string
+  readonly [key: string]: unknown
+}
+
 export interface HexClient {
+  /** Hex desktop control; available in an app or an opted-in Toolbox desktop helper. */
+  control(command: DesktopCommand, options?: RequestOptions): Promise<DesktopReply>
   health(options?: RequestOptions): Promise<Health>
   capabilities(options?: RequestOptions): Promise<Capabilities>
   readonly models: {

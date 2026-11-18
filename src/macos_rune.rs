@@ -230,6 +230,7 @@ pub(crate) fn quit() {
 /// leaves the policy as it was changes nothing for the window server and must
 /// not reorder a shown HUD.
 pub(crate) fn set_dock_icon_visible(visible: bool) {
+    let visible = visible && !crate::toolbox::enabled();
     if crate::app_settings::set_dock_icon_visible(visible) {
         crate::rune_hud::activation_policy_changed();
     }
@@ -321,7 +322,8 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig, hidden: bool
         .flatten();
     let setup_ready = crate::desktop::onboarding::status(&settings.transcription).ready();
     crate::desktop::onboarding::recheck_after_identity_change(&mut settings, setup_ready);
-    let onboarding_completed = crate::desktop::onboarding::completion_recorded();
+    let onboarding_completed =
+        crate::toolbox::enabled() || crate::desktop::onboarding::completion_recorded();
     let history = match crate::history::History::open_default(settings.history_retention) {
         Ok(history) => Some(history),
         Err(error) => {
@@ -391,7 +393,9 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig, hidden: bool
                     }
                 }
             }
-            quit_legacy_hex();
+            if !crate::toolbox::enabled() {
+                quit_legacy_hex();
+            }
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 crate::recognition::listen(
                     event_log,
@@ -482,7 +486,7 @@ pub fn run(shutdown: &'static AtomicBool, listener: ListenerConfig, hidden: bool
             true,
         )
     };
-    let open_at_launch = launch_window == LaunchWindow::Open;
+    let open_at_launch = !crate::toolbox::enabled() && launch_window == LaunchWindow::Open;
     if let Some(error) = settings_error {
         window.update(move |ui, _| crate::rune_ui::show_error(ui, error));
     }
@@ -722,14 +726,18 @@ fn start_main_thread() {
     let Some(Launch { mut pump, target }) = LAUNCH.with(|slot| slot.borrow_mut().take()) else {
         return;
     };
-    pump.status_actions = match crate::macos_rune::status_item::install().and_then(|actions| {
-        relay("hex-status-actions", actions, 8).map_err(color_eyre::Report::from)
-    }) {
-        Ok(actions) => Some(actions),
-        Err(error) => {
-            tracing::error!(%error, "could not install Hex status item; opening the window");
-            show(&pump.window, Destination::Settings);
-            None
+    pump.status_actions = if crate::toolbox::enabled() {
+        None
+    } else {
+        match crate::macos_rune::status_item::install().and_then(|actions| {
+            relay("hex-status-actions", actions, 8).map_err(color_eyre::Report::from)
+        }) {
+            Ok(actions) => Some(actions),
+            Err(error) => {
+                tracing::error!(%error, "could not install Hex status item; opening the window");
+                show(&pump.window, Destination::Settings);
+                None
+            }
         }
     };
     // An open window always shows the Dock icon (see [`show`]).

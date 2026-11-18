@@ -209,6 +209,9 @@ pub fn personal_commands_workspace() -> Result<PathBuf> {
 
 /// The per-user config folder holding `hex.config.ts` on every OS: `~/.config/hex`, or `~/.config/hex-test` for `Hex Test.app`.
 fn user_config_dir() -> Result<PathBuf> {
+    if crate::toolbox::enabled() {
+        return Ok(support_dir()?.join("config"));
+    }
     let home = home_dir().ok_or_else(|| eyre!("home directory is unavailable"))?;
     Ok(user_config_dir_in(&home, is_macos_test_build()))
 }

@@ -563,6 +563,25 @@ export const makeClient = (
   }
 
   return {
+    async control(command, options) {
+      const value = await json(await request("/control", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...command, version: 4 }),
+      }, options?.signal))
+      if (typeof value !== "object" || value === null ||
+          (value as Record<string, unknown>).version !== 4 ||
+          typeof (value as Record<string, unknown>).status !== "string") {
+        throw new HexError("invalid-response", "HEX returned an invalid desktop control response")
+      }
+      const reply = value as import("./types.js").DesktopReply
+      if (reply.status === "error") {
+        throw new HexError("request-failed", String(reply.message), {
+          remoteCode: String(reply.code),
+        })
+      }
+      return reply
+    },
     health,
     capabilities,
     models: { list, prepare },

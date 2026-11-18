@@ -168,7 +168,9 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bool) -> Result<()> {
-    if let Err(error) = crate::windows::login_item::follow_current_version() {
+    if !crate::toolbox::enabled()
+        && let Err(error) = crate::windows::login_item::follow_current_version()
+    {
         tracing::warn!(%error, "could not point Launch at login at this version of Hex");
     }
     let Some(instance) = crate::windows::app::AppInstance::claim(start_hidden)? else {
@@ -206,7 +208,13 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
         let window = window.clone();
         std::thread::Builder::new()
             .name("hex-tray-setup".into())
-            .spawn(move || create_tray(window))
+            .spawn(move || {
+                if crate::toolbox::enabled() {
+                    Err(eyre!("Toolbox owns the tray"))
+                } else {
+                    create_tray(window)
+                }
+            })
     };
     let hud = crate::rune_hud::install(&mut app);
     crate::rune_ui::live_text::install(&mut app, crate::rune_hud::live_text_place);
@@ -238,7 +246,11 @@ pub fn open(event_path: PathBuf, shutdown: &'static AtomicBool, start_hidden: bo
         // Without a tray, closing the window quits: Hex must not run on
         // with no way back to it.
         Err(error) => {
-            tracing::warn!(%error, "Windows system tray is unavailable; closing Hex will quit");
+            if crate::toolbox::enabled() {
+                app = app.windowless().release_gpu_when_closed();
+            } else {
+                tracing::warn!(%error, "Windows system tray is unavailable; closing Hex will quit");
+            }
             None
         }
     };

@@ -15,6 +15,8 @@ export type {
   HexHost,
   ListModelsOptions,
   ModelId,
+  DesktopCommand,
+  DesktopReply,
   ModelInfo,
   ModelProgress,
   PrepareModelOptions,

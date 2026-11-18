@@ -176,6 +176,11 @@ impl LocalApiOptions {
 impl LocalApi {
     /// Start the one app-owned local API and publish its discovery document.
     pub fn start(events: EventLog, options: LocalApiOptions) -> Result<Self> {
+        if crate::toolbox::enabled() {
+            let api = Self::start_bound(None, Arc::new(current_health), events, options, None)?;
+            crate::toolbox::announce(&api)?;
+            return Ok(api);
+        }
         let instance = crate::desktop::instance::acquire("local-api")?;
         Self::start_bound(
             Some(crate::app_paths::local_api_discovery_file()?),
@@ -391,6 +396,9 @@ pub fn run_service(
     embedded: bool,
     shutdown: &'static AtomicBool,
 ) -> Result<()> {
+    if embedded && crate::toolbox::enabled() {
+        return crate::toolbox::run(event_path, shutdown);
+    }
     let service_event_path = if embedded {
         log_dir.join(format!("embedded-{}.ndjson", std::process::id()))
     } else {

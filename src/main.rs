@@ -73,6 +73,7 @@ mod screenshots;
 mod shortcut_pause;
 #[cfg(target_os = "macos")]
 mod suppression;
+mod toolbox;
 mod transcription;
 mod updater;
 #[cfg(target_os = "windows")]

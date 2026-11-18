@@ -264,3 +264,30 @@ observations automatically.
   `NSWorkspace`. Validate native packaging/signing in the final consuming app.
 - Never expose the startup bearer token to renderer or web content. Credentials
   are exchanged over the child pipe and used for authenticated loopback requests.
+
+## Toolbox-owned desktop runtime (CodeMate fork)
+
+The fork can launch Hex's existing desktop dictation loop as an SDK-owned child:
+
+```ts
+const host = await Hex.create({
+  command: [hexPath, "service", "--embedded"],
+  env: {
+    HEX_TOOLBOX_EMBEDDED: "1",
+    HEX_APPLICATION_SUPPORT_DIR: toolboxDataDir,
+    HEX_TOOLBOX_SHORTCUT: "ctrl+alt+space",
+  },
+})
+const status = await host.client.control({ command: "status" })
+// The native shortcut toggles recording and uses Hex's HUD and paste pipeline.
+await host.close()
+```
+
+This is an opt-in desktop runtime, separate from the transcription-only service.
+It needs a desktop session and the same permissions as Hex. Its endpoint uses
+the existing SDK handshake and parent lease; no separate Hex install is needed.
+`control()` validates control version 4 and carries native setting errors. The
+child owns microphone capture, the original Rune pill and focused-field paste.
+Do not call `/models/prepare` to create a second model: configure the desktop
+model through `control({ command: "model-install", model, language })` and wait
+for its listener to become ready before host-audio batch/stream requests.
