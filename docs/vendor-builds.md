@@ -2,8 +2,10 @@
 
 The fork's **Toolbox helper** GitHub Actions workflow builds Hex itself and the
 TypeScript SDK from one selected commit. It does not build Toolbox. Linux and
-Windows reuse `build-desktop.yml`; macOS uses native GitHub-hosted ARM64 and
-Intel runners with Xcode and Metal. No signing credentials are needed.
+Windows reuse `build-desktop.yml`; macOS uses GitHub-hosted Intel runners with
+Xcode and Metal, cross-compiling ARM64 with Apple's toolchain. No signing
+credentials are needed. Set `native-macos-arm64` to true for an Apple silicon
+runner and its native SDK smoke when GitHub's ARM64 pool has capacity.
 
 Run it in `codemate-developers/hex` from the Actions page, or after the workflow
 has landed on `dev`:
@@ -43,8 +45,9 @@ their updates.
 
 The workflow verifies every input artifact's checksum manifest, checks the
 Linux x64 binary's runtime libraries and startup on Debian 12, and checks both
-Mac binaries' architecture, ad-hoc signature, startup, authenticated SDK
-handshake, and shutdown after closing the parent pipe. The SDK runs its
+Mac binaries' architecture and ad-hoc signature. Native Mac jobs also check
+startup, the authenticated SDK handshake, and shutdown after closing the parent
+pipe; cross-compiled ARM64 skips execution on the Intel host. The SDK runs its
 typecheck, tests, and build. These checks do not record audio, run inference,
 or prove desktop permissions, HUD behavior, or focused-field paste. Intel Mac
 inference and desktop behavior still require hardware verification.

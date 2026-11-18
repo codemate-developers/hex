@@ -15,7 +15,7 @@ name: Toolbox helper
 # Toolbox's scripts/sync-vendor-binaries.js downloads the release named by
 # its pin and refuses any file whose digest differs from the manifest.
 # Executables come from build-desktop.yml as test builds (HEX_TEST_BUILD), so
-# they never update themselves. macOS builds on native GitHub-hosted runners;
+# they never update themselves. macOS builds with Xcode on GitHub-hosted runners;
 # the consuming app must handle Developer ID signing and notarization.
 # Manual runs upload the complete vendor bundle without publishing by default.
 #
@@ -33,6 +33,10 @@ on:
         type: string
       publish:
         description: Also publish a Toolbox prerelease (tag pushes always publish)
+        type: boolean
+        default: false
+      native-macos-arm64:
+        description: Use an Apple silicon runner and run the native SDK smoke (subject to hosted-runner capacity)
         type: boolean
         default: false
 
@@ -86,14 +90,14 @@ jobs:
   macos-arm64:
     name: macOS arm64
     needs: resolve
-    runs-on: macos-15
+    # Intel runners can also compile the ARM64 target with Apple's toolchain.
+    # Keep a native opt-in without making every vendor build depend on that pool.
+    runs-on: ${{ inputs.native-macos-arm64 && 'macos-15' || 'macos-26-intel' }}
     timeout-minutes: 90
     env:
       HEX_TEST_BUILD: "1"
       MACOSX_DEPLOYMENT_TARGET: "15.0"
       HEX_MACOS_ARCH: arm64
-      # macOS 15 defaults to Xcode 16; Hex's Swift bridges need the 26 SDK.
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     outputs:
       digest: ${{ steps.upload.outputs.digest }}
     steps: &macos-steps
@@ -104,29 +108,52 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
+          targets: ${{ env.HEX_MACOS_ARCH == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: toolbox-macos-${{ env.HEX_MACOS_ARCH }}
           cache-on-failure: true
       - name: Check Xcode and install the Metal toolchain
         run: |
+          if [ "$(uname -m)" = arm64 ]; then
+            # macOS 15 defaults to Xcode 16; the Swift bridges need the 26 SDK.
+            export DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer
+            echo "DEVELOPER_DIR=$DEVELOPER_DIR" >> "$GITHUB_ENV"
+          fi
           xcodebuild -version
           xcrun --sdk macosx --show-sdk-version
           xcrun --sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
       - name: Build and check the vendor executable
+        id: build
         run: |
-          test "$(uname -m)" = "$HEX_MACOS_ARCH"
-          TRANSCRIBE_CMAKE_ARGS="-DGGML_NATIVE=OFF" cargo build --locked --release --bin hex
+          if [ "$(uname -m)" = "$HEX_MACOS_ARCH" ]; then
+            native_build=true
+            TRANSCRIBE_CMAKE_ARGS="-DGGML_NATIVE=OFF" cargo build --locked --release --bin hex
+            compiled=target/release/hex
+          else
+            test "$(uname -m)" = x86_64
+            test "$HEX_MACOS_ARCH" = arm64
+            native_build=false
+            TRANSCRIBE_CMAKE_ARGS="-DGGML_NATIVE=OFF -DCMAKE_SYSTEM_NAME=Darwin -DCMAKE_SYSTEM_PROCESSOR=arm64 -DCMAKE_OSX_ARCHITECTURES=arm64" \
+              cargo build --locked --release --bin hex --target aarch64-apple-darwin
+            compiled=target/aarch64-apple-darwin/release/hex
+          fi
+          echo "native=$native_build" >> "$GITHUB_OUTPUT"
           mkdir -p dist/vendor
           executable="dist/vendor/hex-darwin-$HEX_MACOS_ARCH"
-          cp target/release/hex "$executable"
+          cp "$compiled" "$executable"
           chmod 755 "$executable"
           test "$(lipo -archs "$executable")" = "$HEX_MACOS_ARCH"
           codesign --force --sign - "$executable"
           codesign --verify --strict --verbose=2 "$executable"
           otool -L "$executable"
-          "$executable" --version
+          if [ "$native_build" = true ]; then
+            "$executable" --version
+          else
+            echo 'macOS ARM64 was cross-compiled on Intel; native execution and inference were not tested.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Check the SDK child handshake and shutdown
+        if: steps.build.outputs.native == 'true'
         run: |
           python3 - <<'PY'
           import json, os, pathlib, selectors, subprocess, tempfile, urllib.request
