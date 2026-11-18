@@ -855,6 +855,11 @@ pub(super) const KEYS: &[Key] = &[
         "Where the speech model runs: auto (a GPU unless it failed before), gpu, or cpu (Linux and Windows)",
     ),
     key(
+        "hud_style",
+        Kind::Choice(&["dots", "bars"]),
+        "How the dictation HUD draws the voice: dots (Dot scope) or bars",
+    ),
+    key(
         "indicator_position",
         Kind::Choice(&["top", "bottom", "hidden"]),
         "Where the dictation HUD appears",

@@ -2387,6 +2387,17 @@ The HUD is Dot scope on every OS ([rune_hud/dot_scope.rs](../../src/rune_hud/dot
 a Rune overlay). It was the `dot-scope` experiment (#264) until 2026-10-29,
 when it replaced the glossy capsule, which Omarchy users on X called a
 "static red thingy"; the capsule's shader and HUD Lab styles are deleted. It is the t422 prototype's look A with its values.
+Settings' `hud_style` (`hex settings`; no pane yet, CodeMate Toolbox sets it)
+draws `bars` instead: up to 13 rounded level bars 6 pt apart
+(`dot_scope::BARS`, `BAR_PITCH`), each showing the voice 70 ms older than its
+neighbour nearer the middle, read from the trace Dot scope draws
+(`Scope::bars`), with a light sweeping bars at rest while Hex works. The CPU
+writes each bar's height and brightness into the first slots of the dot
+buffer and `ears.z` tells `rune_hud.wgsl` to draw bars; the plate, palette,
+springs, and states are Dot scope's. Bars too near the narrower working
+plate's ends fade out. The notch indicator's ears ignore the style. Checked by
+`bars_follow_the_voice_outward_and_rest_under_a_sweep_while_working` (the
+model only); drawn bars were not yet compared against a golden.
 Linux and Windows draw it in a 304×80 pt window at the HUD's edge (no
 menu-bar or notch placement), on the display under the pointer when the
 capture starts, as macOS does (#486; `rune_hud::display`). Windows and X11
