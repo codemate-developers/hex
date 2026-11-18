@@ -38,6 +38,12 @@ fn available() -> bool {
     true
 }
 
+/// The capability `name` needs, whichever OS this is.
+#[cfg(test)]
+pub(crate) fn capability_needed(name: &str) -> Option<&'static str> {
+    needs(name)
+}
+
 /// Why `hex settings set` refuses `name` on this OS, if it does.
 pub fn unavailable(name: &str) -> Option<ControlError> {
     unavailable_under(name, crate::policy::Policy::current())

@@ -40,6 +40,18 @@ pub(crate) fn run(event_path: PathBuf, shutdown: &'static AtomicBool) -> Result<
     return crate::open_app(event_path, None, true);
 }
 
+/// The settings Toolbox sets through Hex's validated settings path. None may
+/// need an OS capability (`toolbox_sets_no_key_that_needs_an_os_capability`).
+fn validated_values(shortcut: &str) -> serde_json::Value {
+    serde_json::json!({
+        "dictation_hotkey": shortcut,
+        "shortcut_mode": "toggle",
+        "paste_last_hotkey": "none",
+        "double_tap_lock": false,
+        "release_microphone_while_idle": true
+    })
+}
+
 fn configured_settings(
     base: &crate::app_settings::AppSettings,
     shortcut: &str,
@@ -58,14 +70,12 @@ fn configured_settings(
     }
     base.labs.screenshots = false;
     base.gnome_keyboard_shortcuts = false;
-    let values = serde_json::from_value(serde_json::json!({
-        "dictation_hotkey": shortcut,
-        "shortcut_mode": "toggle",
-        "enable_on_launch": true,
-        "paste_last_hotkey": "none",
-        "double_tap_lock": false,
-        "release_microphone_while_idle": true
-    }))?;
+    // The listener switch exists only on Linux and Windows (macOS's listener
+    // always runs), and `apply_all` refuses a key its OS lacks, so it is set
+    // here and not with the validated values: setting it there stopped the
+    // host at startup on macOS.
+    base.enable_on_launch = true;
+    let values = serde_json::from_value(validated_values(shortcut))?;
     let change =
         crate::control::settings::apply_all(&base, &values, &crate::rune_ui::shortcut_rules())
             .map_err(|error| color_eyre::eyre::eyre!("{}", error.message))?;
@@ -112,5 +122,29 @@ mod tests {
         assert!(settings.paste_last_hotkey.is_none());
         assert!(settings.runtime_hotkeys().capture.is_none());
         assert!(configured_settings(&base, "ctrl+not-a-real-key").is_err());
+    }
+
+    #[test]
+    fn the_listener_switch_is_on_whatever_the_saved_settings_say() {
+        let base = crate::app_settings::AppSettings {
+            enable_on_launch: false,
+            ..Default::default()
+        };
+        let settings = configured_settings(&base, "ctrl+alt+f9").unwrap();
+        assert!(settings.enable_on_launch);
+    }
+
+    /// macOS has no `listener_control`, so a key that needs a capability can
+    /// pass on Linux and Windows and still stop the host there.
+    #[test]
+    fn toolbox_sets_no_key_that_needs_an_os_capability() {
+        let values = validated_values("ctrl+alt+f9");
+        for key in values.as_object().unwrap().keys() {
+            assert_eq!(
+                crate::control::settings::capability_needed(key),
+                None,
+                "`{key}` needs an OS capability; set it on the settings directly"
+            );
+        }
     }
 }
