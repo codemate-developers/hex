@@ -2622,8 +2622,16 @@ TypeScript SDK + local service             // macOS, Linux, Windows
 │   └── hex service -> serviceCapture false, 404 service-capture-unavailable
 └── Distribution
     ├── SDK 0.3.0 -> Published
+    ├── Fork vendor workflow -> Six OS/architecture executables + one compiled SDK
+    │   └── macOS: ad-hoc signed; consuming app owns distribution signing
     └── Turnkey signed helper -> Unfinished
 ```
+
+The fork's [vendor builds](../vendor-builds.md) document the manual build and
+optional prerelease routes, artifact layout, and verification limits. Its six
+targets are Linux, Windows, and macOS, each x64 and ARM64. Workflow configuration
+is not a passing build or native dictation proof; Intel Mac inference remains
+unverified.
 
 Linux and Windows serve the same local API from the running app
 ([linux/app.rs](../../src/linux/app.rs), [windows/rune.rs](../../src/windows/rune.rs))
