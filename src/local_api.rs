@@ -1129,8 +1129,20 @@ fn selection_query(path: &str) -> std::result::Result<SelectionQuery, &'static s
 }
 
 fn client_aborted(stream: &TcpStream) -> bool {
+    // A blocking peek on a quiet, healthy client waits out the connection's
+    // read timeout (`CONNECTION_TIMEOUT`), and a transcription that finishes
+    // meanwhile answers only after it: every answer was rounded up to about
+    // 600 ms. Peek without blocking, then restore the mode.
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
     let mut byte = [0_u8; 1];
-    match stream.peek(&mut byte) {
+    let peeked = stream.peek(&mut byte);
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::warn!(%error, "could not restore a local API connection to blocking mode");
+        return true;
+    }
+    match peeked {
         // A read-side EOF can be a valid HTTP client half-close; only a socket
         // error proves the client cannot receive the response.
         Ok(_) => false,
@@ -1482,6 +1494,33 @@ mod tests {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     /// How long a test waits on another thread before failing instead of hanging.
     const TEST_WAIT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn checking_a_quiet_client_does_not_wait_out_the_read_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(CONNECTION_TIMEOUT)).unwrap();
+        let started = Instant::now();
+        for _ in 0..5 {
+            assert!(!client_aborted(&server));
+        }
+        assert!(
+            started.elapsed() < CONNECTION_TIMEOUT,
+            "five checks took {:?}",
+            started.elapsed()
+        );
+        // The connection is still blocking with its timeout for the answer.
+        let mut byte = [0_u8; 1];
+        let waited = Instant::now();
+        let error = (&server).read(&mut byte).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert!(waited.elapsed() >= CONNECTION_TIMEOUT / 2);
+        drop(client);
+    }
 
     #[test]
     fn browser_access_is_off_unless_the_lab_lists_the_origin() {
