@@ -18,6 +18,11 @@ The code is `src/local_api/streams.rs` (routes) and `src/transcription/stream.rs
 
 - The running Hex app on macOS, Linux, and Windows, with a GGUF model loaded
   by dictation (on Linux and Windows, once the listener is on).
+- `hex service` and `hex service --embedded`, once a host has prepared a GGUF
+  model (`POST /models/{id}/prepare`). The service's prepared model is the
+  stream engine, so streams and short `/transcriptions` clips share one copy.
+  Preparing another model ends a live stream on the old one. Before any
+  prepare, creating a stream answers `503 engine-unavailable`.
 - `GET /capabilities` reports `"streams": true` when the routes exist, and
   `"outputProcessing": true` when `process=global` would run (Labs › Process
   API transcripts on, and the running app installed its processor).

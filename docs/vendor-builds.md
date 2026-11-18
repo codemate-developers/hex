@@ -10,7 +10,7 @@ has landed on `dev`:
 
 ```sh
 gh workflow run toolbox-helper.yml --repo codemate-developers/hex \
-  --ref dev -f ref=toolbox/embedded-streams
+  --ref dev -f ref=dev
 ```
 
 `--ref` selects the workflow revision; the `ref` input selects the source branch,

@@ -721,6 +721,11 @@ impl WarmLocal {
         self.active.as_mut()
     }
 
+    /// Moves the loaded model out, such as into an engine.
+    pub(crate) fn take(&mut self) -> Option<LocalTranscriber> {
+        self.active.take()
+    }
+
     pub(crate) fn activate(
         &mut self,
         selection: &TranscriptionSelection,

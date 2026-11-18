@@ -37,6 +37,13 @@ const SESSION: &str = "org.freedesktop.portal.Session";
 /// that are not reverse-DNS (#579), so this matches the macOS bundle
 /// identifier.
 pub(crate) const APP_ID: &str = "anomaly.hex";
+pub(crate) fn app_id() -> &'static str {
+    if crate::toolbox::enabled() {
+        "com.codemate.cm-toolbox.dictation"
+    } else {
+        APP_ID
+    }
+}
 /// The app id and entry name before #579.
 const LEGACY_APP_ID: &str = "hex";
 const LEGACY_ENTRY: &str = "hex.desktop";
@@ -258,7 +265,7 @@ impl PortalBus {
             DESKTOP_PATH,
             "org.freedesktop.host.portal.Registry",
             "Register",
-            &(APP_ID, HashMap::<&str, Variant<'_>>::new()),
+            &(app_id(), HashMap::<&str, Variant<'_>>::new()),
         ) {
             if !unknown(&error) {
                 // The portal finds the app id through anomaly.hex.desktop and the caller's
@@ -578,7 +585,7 @@ impl DesktopEntries {
     }
 
     fn entry(&self) -> PathBuf {
-        self.applications.join(format!("{APP_ID}.desktop"))
+        self.applications.join(format!("{}.desktop", app_id()))
     }
 
     fn shipped(&self, name: &str) -> bool {
@@ -614,7 +621,7 @@ impl DesktopEntries {
         if let Entry::File(current) = &current
             && managed(current)
             && no_display(current)
-            && self.shipped(&format!("{APP_ID}.desktop"))
+            && self.shipped(&format!("{}.desktop", app_id()))
         {
             std::fs::remove_file(&entry)
                 .wrap_err_with(|| format!("could not remove {}", entry.display()))?;
@@ -648,7 +655,7 @@ impl DesktopEntries {
             return Ok(());
         }
         // A package now ships Hex's entry: the stranded fallback only hid it.
-        if !program.is_file() && self.shipped(&format!("{APP_ID}.desktop")) {
+        if !program.is_file() && self.shipped(&format!("{}.desktop", app_id())) {
             std::fs::remove_file(&entry)
                 .wrap_err_with(|| format!("could not remove {}", entry.display()))?;
             tracing::info!(entry = %entry.display(), "removed Hex's stranded desktop entry");
@@ -669,6 +676,11 @@ impl DesktopEntries {
     /// and hidden from launchers when an older package's or the user's own
     /// `hex.desktop` already shows Hex. Returns the entry it wrote.
     fn ensure(&self, executable: &str) -> Result<Option<PathBuf>> {
+        if crate::toolbox::enabled() {
+            let entry = self.entry();
+            write_entry(&self.applications, &entry, &desktop_entry(executable, true))?;
+            return Ok(Some(entry));
+        }
         let moved = self.tidy()?;
         self.repoint(executable)?;
         if moved.is_some() {
@@ -676,7 +688,7 @@ impl DesktopEntries {
         }
         let entry = self.entry();
         if !matches!(read_entry(&entry)?, Entry::Missing)
-            || self.shipped(&format!("{APP_ID}.desktop"))
+            || self.shipped(&format!("{}.desktop", app_id()))
         {
             return Ok(None);
         }
@@ -717,7 +729,7 @@ fn no_display(entry: &str) -> bool {
 
 fn write_entry(applications: &Path, entry: &Path, contents: &str) -> Result<()> {
     std::fs::create_dir_all(applications)?;
-    let staged = applications.join(format!(".{APP_ID}.desktop.{}", std::process::id()));
+    let staged = applications.join(format!(".{}.desktop.{}", app_id(), std::process::id()));
     let mut file = std::fs::File::create(&staged)?;
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
@@ -730,7 +742,7 @@ pub(crate) fn with_icon(entry: &str) -> String {
     let mut named = String::with_capacity(entry.len());
     for line in entry.lines() {
         if line.trim_start().starts_with("Icon=") {
-            named.push_str(&format!("Icon={APP_ID}"));
+            named.push_str(&format!("Icon={}", app_id()));
         } else {
             named.push_str(line);
         }
@@ -750,7 +762,7 @@ fn moved_entry(old: &str) -> String {
         entry.push_str(line);
         entry.push('\n');
         if line.trim() == "[Desktop Entry]" {
-            entry.push_str(&format!("StartupWMClass={APP_ID}\n"));
+            entry.push_str(&format!("StartupWMClass={}\n", app_id()));
         }
     }
     with_icon(&entry)
@@ -758,8 +770,14 @@ fn moved_entry(old: &str) -> String {
 
 /// `NoDisplay`, not `Hidden`: the portal refuses an app whose entry is Hidden.
 fn desktop_entry(executable: &str, hidden: bool) -> String {
+    let app_id = app_id();
+    let name = if crate::toolbox::enabled() {
+        "Toolbox dictation"
+    } else {
+        "Hex"
+    };
     format!(
-        "[Desktop Entry]\nType=Application\nName=Hex\nComment=Local voice dictation\nExec={}\nIcon={APP_ID}\nTerminal=false\nCategories=Utility;Accessibility;\nStartupWMClass={APP_ID}\n{}{MANAGED_MARK}\n",
+        "[Desktop Entry]\nType=Application\nName={name}\nComment=Local voice dictation\nExec={}\nIcon={app_id}\nTerminal=false\nCategories=Utility;Accessibility;\nStartupWMClass={app_id}\n{}{MANAGED_MARK}\n",
         exec_argument(executable),
         if hidden { "NoDisplay=true\n" } else { "" }
     )
@@ -873,6 +891,9 @@ impl Portal {
     /// id, and KDE keeps the old one holding its key, so the new id could
     /// never take that key back (#898). Only on KDE, only Hex's entries.
     pub(crate) fn forget_legacy_kde_shortcuts(&self, keep: &[&str]) -> Result<()> {
+        if crate::toolbox::enabled() {
+            return Ok(());
+        }
         if !desktop_is("KDE") {
             return Ok(());
         }
@@ -888,7 +909,7 @@ impl Portal {
                 .wrap_err("could not list Hex's old KDE shortcuts")
         };
         let legacy = list(LEGACY_APP_ID)?;
-        let current = list(APP_ID)?;
+        let current = list(app_id())?;
         for (component, action) in superseded_kde_actions(&legacy, &current, keep) {
             let removed: bool = self
                 .bus
@@ -920,7 +941,7 @@ impl Portal {
                     KGLOBALACCEL_PATH,
                     KGLOBALACCEL_INTERFACE,
                     "shortcutKeys",
-                    &(vec![APP_ID, action.as_str()],),
+                    &(vec![app_id(), action.as_str()],),
                 )
                 .wrap_err_with(|| format!("could not read Hex's KDE shortcut {action}"))?;
             if keys.iter().any(|(keys,)| keys.iter().any(|key| *key != 0)) {
@@ -933,7 +954,7 @@ impl Portal {
                     KGLOBALACCEL_PATH,
                     KGLOBALACCEL_INTERFACE,
                     "unregister",
-                    &(APP_ID, action.as_str()),
+                    &(app_id(), action.as_str()),
                 )
                 .wrap_err_with(|| format!("could not remove Hex's KDE shortcut {action}"))?;
             if removed {
@@ -1062,7 +1083,7 @@ fn superseded_kde_actions<'a>(
         .collect::<Vec<_>>();
     current.sort_unstable();
     current.dedup();
-    actions.extend(current.into_iter().map(|action| (APP_ID, action)));
+    actions.extend(current.into_iter().map(|action| (app_id(), action)));
     actions
 }
 
@@ -1471,7 +1492,7 @@ mod tests {
     /// GNOME before 51 refuses a portal app id that is not reverse-DNS (#579).
     #[test]
     fn the_portal_app_id_is_reverse_dns() {
-        let parts = APP_ID.split('.').collect::<Vec<_>>();
+        let parts = app_id().split('.').collect::<Vec<_>>();
         assert!(parts.len() >= 2);
         assert!(parts.iter().all(|part| {
             part.chars()
@@ -1537,10 +1558,10 @@ mod tests {
         };
         let legacy = vec![id("hex", "dictation")];
         let current = vec![
-            id(APP_ID, "dictation-ALT-space"),
-            id(APP_ID, "dictation-CTRL-ALT-space"),
-            id(APP_ID, "paste-last-ALT-SHIFT-v"),
-            id(APP_ID, "cancel"),
+            id(app_id(), "dictation-ALT-space"),
+            id(app_id(), "dictation-CTRL-ALT-space"),
+            id(app_id(), "paste-last-ALT-SHIFT-v"),
+            id(app_id(), "cancel"),
         ];
         let removed = superseded_kde_actions(
             &legacy,
@@ -1551,9 +1572,9 @@ mod tests {
             removed,
             vec![
                 ("hex", "dictation"),
-                (APP_ID, "cancel"),
-                (APP_ID, "cancel-dictation"),
-                (APP_ID, "dictation-ALT-space"),
+                (app_id(), "cancel"),
+                (app_id(), "cancel-dictation"),
+                (app_id(), "dictation-ALT-space"),
             ]
         );
     }

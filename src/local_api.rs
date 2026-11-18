@@ -154,14 +154,33 @@ pub struct LocalApiOptions {
     /// Where `/streams` finds its engine; the running app's shared engine
     /// when unset.
     pub(crate) stream_engine: Option<crate::transcription::stream::EngineSource>,
+    /// Who owns the engine prepared models run on: the app's dictation
+    /// engine, or, in `hex service`, the service's own.
+    pub(crate) engine_sharing: crate::transcription::service::EngineSharing,
     /// The origins whose browser pages may call this API (Labs › Browser
     /// access to the local API). Tests install their own gate here.
     pub(crate) cors: Cors,
 }
 
+impl LocalApiOptions {
+    /// `hex service [--embedded]`: no app, so prepared models share the
+    /// service's own engine.
+    fn service() -> Self {
+        Self {
+            engine_sharing: crate::transcription::service::EngineSharing::OwnPrepared,
+            ..Self::default()
+        }
+    }
+}
+
 impl LocalApi {
     /// Start the one app-owned local API and publish its discovery document.
     pub fn start(events: EventLog, options: LocalApiOptions) -> Result<Self> {
+        if crate::toolbox::enabled() {
+            let api = Self::start_bound(None, Arc::new(current_health), events, options, None)?;
+            crate::toolbox::announce(&api)?;
+            return Ok(api);
+        }
         let instance = crate::desktop::instance::acquire("local-api")?;
         Self::start_bound(
             Some(crate::app_paths::local_api_discovery_file()?),
@@ -207,7 +226,7 @@ impl LocalApi {
             None,
             Arc::new(current_health),
             events,
-            LocalApiOptions::default(),
+            LocalApiOptions::service(),
             None,
         )
     }
@@ -242,7 +261,9 @@ impl LocalApi {
             prepare_discovery_path(path)?;
         }
         let (transcription_service, transcription) =
-            crate::transcription::service::TranscriptionService::start()?;
+            crate::transcription::service::TranscriptionService::start_with(
+                options.engine_sharing,
+            )?;
         let listener = TcpListener::bind("127.0.0.1:0").wrap_err("could not bind the local API")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
@@ -375,6 +396,9 @@ pub fn run_service(
     embedded: bool,
     shutdown: &'static AtomicBool,
 ) -> Result<()> {
+    if embedded && crate::toolbox::enabled() {
+        return crate::toolbox::run(event_path, shutdown);
+    }
     let service_event_path = if embedded {
         log_dir.join(format!("embedded-{}.ndjson", std::process::id()))
     } else {
@@ -397,9 +421,15 @@ pub fn run_service(
                         Ok(0) => {
                             shutdown.store(true, Ordering::Release);
                             thread::sleep(Duration::from_secs(5));
-                            tracing::warn!(
-                                "forcing embedded service shutdown after host lease closed"
-                            );
+                            // The last resort must not wait on logging: a
+                            // stuck writer would keep the helper (and its
+                            // model) alive after its host is gone.
+                            let _ = thread::Builder::new().spawn(|| {
+                                tracing::warn!(
+                                    "forcing embedded service shutdown after host lease closed"
+                                );
+                            });
+                            thread::sleep(Duration::from_millis(100));
                             std::process::exit(0);
                         }
                         Ok(_) => {}
@@ -419,7 +449,7 @@ pub fn run_service(
         drop(stdout);
         api
     } else {
-        LocalApi::start(events, LocalApiOptions::default())?
+        LocalApi::start(events, LocalApiOptions::service())?
     };
     while !shutdown.load(Ordering::Relaxed) {
         thread::sleep(Duration::from_millis(100));
@@ -1099,8 +1129,20 @@ fn selection_query(path: &str) -> std::result::Result<SelectionQuery, &'static s
 }
 
 fn client_aborted(stream: &TcpStream) -> bool {
+    // A blocking peek on a quiet, healthy client waits out the connection's
+    // read timeout (`CONNECTION_TIMEOUT`), and a transcription that finishes
+    // meanwhile answers only after it: every answer was rounded up to about
+    // 600 ms. Peek without blocking, then restore the mode.
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
     let mut byte = [0_u8; 1];
-    match stream.peek(&mut byte) {
+    let peeked = stream.peek(&mut byte);
+    if let Err(error) = stream.set_nonblocking(false) {
+        tracing::warn!(%error, "could not restore a local API connection to blocking mode");
+        return true;
+    }
+    match peeked {
         // A read-side EOF can be a valid HTTP client half-close; only a socket
         // error proves the client cannot receive the response.
         Ok(_) => false,
@@ -1452,6 +1494,33 @@ mod tests {
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     /// How long a test waits on another thread before failing instead of hanging.
     const TEST_WAIT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn checking_a_quiet_client_does_not_wait_out_the_read_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        server.set_read_timeout(Some(CONNECTION_TIMEOUT)).unwrap();
+        let started = Instant::now();
+        for _ in 0..5 {
+            assert!(!client_aborted(&server));
+        }
+        assert!(
+            started.elapsed() < CONNECTION_TIMEOUT,
+            "five checks took {:?}",
+            started.elapsed()
+        );
+        // The connection is still blocking with its timeout for the answer.
+        let mut byte = [0_u8; 1];
+        let waited = Instant::now();
+        let error = (&server).read(&mut byte).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert!(waited.elapsed() >= CONNECTION_TIMEOUT / 2);
+        drop(client);
+    }
 
     #[test]
     fn browser_access_is_off_unless_the_lab_lists_the_origin() {

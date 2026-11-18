@@ -73,6 +73,7 @@ mod screenshots;
 mod shortcut_pause;
 #[cfg(target_os = "macos")]
 mod suppression;
+mod toolbox;
 mod transcription;
 mod updater;
 #[cfg(target_os = "windows")]
@@ -85,7 +86,7 @@ use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "macos")]
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use color_eyre::Result;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", debug_assertions))]
 use color_eyre::eyre::eyre;
 
 #[cfg(target_os = "macos")]

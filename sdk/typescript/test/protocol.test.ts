@@ -29,6 +29,21 @@ describe("capabilities decoding", () => {
     expect(() => decodeCapabilities({ ...capabilities, outputProcessing: "yes" }))
       .toThrowError(expect.objectContaining({ code: "invalid-response" }))
   })
+
+  it("keeps the streaming capabilities a newer host reports and ignores unknown ones", () => {
+    expect(decodeCapabilities({
+      ...capabilities,
+      outputProcessing: false,
+      streams: true,
+      dictationPartials: false,
+      developerControl: false,
+      control: true,
+    })).toEqual({ ...capabilities, outputProcessing: false, streams: true, dictationPartials: false })
+    expect(() => decodeCapabilities({ ...capabilities, streams: 1 }))
+      .toThrowError(expect.objectContaining({ code: "invalid-response" }))
+    expect(() => decodeCapabilities({ ...capabilities, dictationPartials: "no" }))
+      .toThrowError(expect.objectContaining({ code: "invalid-response" }))
+  })
 })
 
 describe("transcription decoding", () => {

@@ -38,6 +38,13 @@ export interface Capabilities {
    * API transcripts). Absent from hosts older than this field.
    */
   readonly outputProcessing?: boolean
+  /** Whether `/streams` live transcription exists. Absent from older hosts. */
+  readonly streams?: boolean
+  /**
+   * Whether a desktop capture can stream its text so far. Absent from older
+   * hosts; false on macOS and in the embedded helper.
+   */
+  readonly dictationPartials?: boolean
 }
 
 export interface ModelInfo {
@@ -143,7 +150,99 @@ export interface DictationHandle {
   cancel(): Promise<void>
 }
 
+export type StreamSampleFormat = "f32le" | "s16le"
+
+export interface StreamCreateOptions extends RequestOptions {
+  /** Defaults to `f32le`. Samples are 16 kHz mono, little-endian. */
+  readonly sampleFormat?: StreamSampleFormat
+  /** When given, must match the model the host holds, or creation answers `model-mismatch`. */
+  readonly model?: ModelId
+  readonly language?: string
+}
+
+/** A finished window's final text. */
+export interface StreamSegment {
+  readonly segment: number
+  readonly startMs: number
+  readonly endMs: number
+  readonly text: string
+}
+
+export type StreamEvent =
+  | {
+    readonly type: "ready"
+    readonly id: number
+    readonly model: ModelId
+    readonly language: string
+    readonly sampleFormat: StreamSampleFormat
+    readonly partials: boolean
+  }
+  /** `stable` is committed; `tentative` may still change. Replaces the previous partial for `segment`. */
+  | { readonly type: "partial"; readonly segment: number; readonly stable: string; readonly tentative: string }
+  | ({ readonly type: "segment" } & StreamSegment)
+  | {
+    readonly type: "final"
+    readonly text: string
+    readonly segments: readonly StreamSegment[]
+    readonly durationMs: number
+  }
+  | { readonly type: "error"; readonly code: string; readonly message: string }
+  | { readonly type: "cancelled" }
+
+export interface StreamResult {
+  readonly text: string
+  readonly segments: readonly StreamSegment[]
+  readonly durationMs: number
+  /** Present only when finish asked for `process: "global"`. */
+  readonly processed?: string
+}
+
+export interface StreamFinishOptions extends RequestOptions {
+  readonly process?: "global"
+}
+
+export interface StreamHandle {
+  readonly id: number
+  /** Unguessable owner credential required by every operation on this stream. */
+  readonly ownerToken: string
+  readonly model: ModelId
+  readonly language: string
+  readonly sampleRate: 16000
+  readonly sampleFormat: StreamSampleFormat
+  /** Whether `partial` events will arrive; false when the model cannot stream on its device. */
+  readonly partials: boolean
+  readonly leaseMs: number
+  /**
+   * Every segment from the start, live events, then the terminal event. One
+   * consumer; when the buffer is full the oldest partial is dropped first.
+   */
+  readonly events: AsyncIterable<StreamEvent>
+  /**
+   * Queues samples in the declared format: `Float32Array` for `f32le`,
+   * `Int16Array` for `s16le`, or raw little-endian bytes. Large pushes are
+   * split into requests within the host's limit.
+   */
+  push(samples: Float32Array | Int16Array | Uint8Array, options?: RequestOptions): Promise<void>
+  /** Transcribes what is left. A `stream-finish-timeout` rejection leaves the stream running; call again. */
+  finish(options?: StreamFinishOptions): Promise<StreamResult>
+  cancel(): Promise<void>
+}
+
+export type DesktopCommand =
+  | { readonly command: "status" }
+  | { readonly command: "model-install"; readonly model: string; readonly language?: string }
+  | { readonly command: "settings-apply"; readonly values: Readonly<Record<string, unknown>> }
+  | { readonly command: "dictation"; readonly action: "start" | "stop" | "toggle" | "cancel" }
+
+export interface DesktopReply {
+  readonly version: number
+  readonly status: string
+  readonly [key: string]: unknown
+}
+
 export interface HexClient {
+  /** Hex desktop control; available in an app or an opted-in Toolbox desktop helper. */
+  control(command: DesktopCommand, options?: RequestOptions): Promise<DesktopReply>
   health(options?: RequestOptions): Promise<Health>
   capabilities(options?: RequestOptions): Promise<Capabilities>
   readonly models: {
@@ -153,6 +252,10 @@ export interface HexClient {
   transcribe(request: TranscriptionRequest): Promise<TranscriptionResult>
   readonly dictation: {
     start(options: DictationStartOptions): Promise<DictationHandle>
+  }
+  /** Live transcription of caller-supplied audio on the host's loaded model. */
+  readonly streams: {
+    create(options?: StreamCreateOptions): Promise<StreamHandle>
   }
 }
 
@@ -184,6 +287,8 @@ export interface Transcriber {
   readonly language: string
   /** PCM WAV bytes. Cancelling in-flight work closes this transcriber before rejecting. */
   transcribe(audio: ArrayBuffer | Uint8Array, options?: RequestOptions): Promise<TranscriptionResult>
+  /** Opens a live stream bound to this transcriber's model and language. */
+  stream(options?: Omit<StreamCreateOptions, "model" | "language">): Promise<StreamHandle>
   close(): Promise<void>
 }
 

@@ -552,6 +552,13 @@ fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
         memory_footprint_bytes: super::memory_footprint(),
         listener: ListenerReport {
             running: state.listener.running,
+            shortcut_backend: match &state.listener.shortcuts {
+                crate::desktop::host::DesktopShortcuts::Registered => "registered",
+                crate::desktop::host::DesktopShortcuts::Portal(_) => "portal",
+                crate::desktop::host::DesktopShortcuts::Commands => "commands",
+                crate::desktop::host::DesktopShortcuts::Unregistered => "unregistered",
+            }
+            .into(),
             status: match state
                 .listener
                 .notice
@@ -567,6 +574,7 @@ fn status(host: &dyn Host) -> Result<ControlReply, ControlError> {
                     .map(|shortcut| super::GrantedShortcutReport {
                         name: shortcut.name.clone(),
                         trigger: shortcut.trigger.clone(),
+                        unconfirmed: shortcut.unconfirmed,
                     })
                     .collect(),
                 _ => Vec::new(),

@@ -190,6 +190,7 @@ export const prepareTranscriber = async (host: HexHost, options: TranscriberOpti
         throw error
       }
     },
+    stream: (streamOptions = {}) => host.client.streams.create({ ...streamOptions, model, language }),
   }
 }
 

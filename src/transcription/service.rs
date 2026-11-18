@@ -37,6 +37,17 @@ const SHARED_WAIT: Duration = Duration::from_secs(20);
 /// transcribe` sends a long file in pieces of this length.
 pub(crate) const SHARED_MAX_SAMPLES: usize = 30 * 16_000;
 
+/// Who owns the engine that host audio and `/streams` share.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EngineSharing {
+    /// The running app's dictation engine, when it holds the selection.
+    #[default]
+    UseApps,
+    /// `hex service`: no app runs, so the service shares its own prepared
+    /// model.
+    OwnPrepared,
+}
+
 pub struct TranscriptionService {
     commands: Option<SyncSender<Command>>,
     worker: Option<JoinHandle<()>>,
@@ -131,11 +142,18 @@ enum Command {
 
 impl TranscriptionService {
     pub fn start() -> Result<(Self, TranscriptionServiceHandle)> {
+        Self::start_with(EngineSharing::UseApps)
+    }
+
+    /// Starts the service; with [`EngineSharing::OwnPrepared`] a prepared
+    /// GGUF model moves into an engine this service shares, so `/streams`
+    /// has an engine in `hex service` and the model has one copy.
+    pub fn start_with(sharing: EngineSharing) -> Result<(Self, TranscriptionServiceHandle)> {
         let (commands, receiver) = mpsc::sync_channel(COMMAND_CAPACITY);
         let audio_busy = Arc::new(AtomicBool::new(false));
         let worker = thread::Builder::new()
             .name("transcription-service".into())
-            .spawn(move || run(receiver))?;
+            .spawn(move || run(receiver, sharing))?;
         Ok((
             Self {
                 commands: Some(commands.clone()),
@@ -333,10 +351,13 @@ where
     Ok(mono)
 }
 
-fn run(commands: Receiver<Command>) {
+fn run(commands: Receiver<Command>, sharing: EngineSharing) {
     #[cfg(target_os = "macos")]
     crate::parakeet::prioritize_inference_thread();
     let mut active = WarmTranscriber::default();
+    // The engine `TranscriptionEngine::share` publishes is held weakly; this
+    // keeps it alive until the service stops or prepares another model.
+    let mut owned: Option<Arc<crate::transcription::engine::TranscriptionEngine>> = None;
     while let Ok(command) = commands.recv() {
         match command {
             Command::Prepare {
@@ -344,7 +365,13 @@ fn run(commands: Receiver<Command>) {
                 canceled,
                 response,
             } => {
-                let _ = response.send(prepare(&mut active, &selection, &canceled));
+                let prepared = match sharing {
+                    EngineSharing::UseApps => prepare(&mut active, &selection, &canceled),
+                    EngineSharing::OwnPrepared => {
+                        prepare_shared(&mut active, &mut owned, &selection, &canceled)
+                    }
+                };
+                let _ = response.send(prepared);
             }
             Command::Transcribe {
                 selection,
@@ -395,6 +422,57 @@ fn prepare(
         };
     }
     prepare_own(active, selection, canceled)
+}
+
+/// `hex service`'s prepare: a GGUF model already in the shared engine is
+/// prewarmed there; otherwise the old engine goes first, so the GPU never
+/// holds two models, and the newly loaded one moves into an engine that
+/// `/streams` and short host clips share. Any live stream on the old engine
+/// ends. Other runtimes stay in the service's own copy, as before.
+fn prepare_shared(
+    active: &mut WarmTranscriber,
+    owned: &mut Option<Arc<crate::transcription::engine::TranscriptionEngine>>,
+    selection: &TranscriptionSelection,
+    canceled: &Arc<AtomicBool>,
+) -> std::result::Result<(), TranscriptionServiceError> {
+    use crate::transcription::engine::TranscriptionEngine;
+    use crate::transcription::models::{ModelRuntime, definition};
+
+    if !matches!(definition(selection.model).runtime, ModelRuntime::Gguf(_)) {
+        check_canceled(canceled)?;
+        // A runtime switch must release the service's previous GGUF engine
+        // too, or streams would keep using the old model beside the new one.
+        owned.take();
+        return prepare_own(active, selection, canceled);
+    }
+    if owned.as_ref().is_some_and(|engine| engine.holds(selection)) {
+        return prepare(active, selection, canceled);
+    }
+    check_canceled(canceled)?;
+    owned.take();
+    prepare_own(active, selection, canceled)?;
+    let Some(model) = take_model(active) else {
+        return Err(TranscriptionServiceError::Model(
+            "the prepared model was not loaded".into(),
+        ));
+    };
+    let engine = TranscriptionEngine::start(model)
+        .map(Arc::new)
+        .map_err(|error| TranscriptionServiceError::Model(format!("{error:#}")))?;
+    engine.share();
+    *owned = Some(engine);
+    Ok(())
+}
+
+/// The service's loaded model, in the form the engine runs.
+fn take_model(active: &mut WarmTranscriber) -> Option<crate::transcription::engine::Model> {
+    #[cfg(target_os = "macos")]
+    {
+        active.active()?;
+        Some(std::mem::take(active))
+    }
+    #[cfg(not(target_os = "macos"))]
+    active.take()
 }
 
 /// Loads `selection` into the service's own copy, or prewarms that copy.

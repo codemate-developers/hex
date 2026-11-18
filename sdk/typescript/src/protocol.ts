@@ -4,6 +4,10 @@ import type {
   DictationLevel,
   Health,
   ModelId,
+  StreamEvent,
+  StreamResult,
+  StreamSampleFormat,
+  StreamSegment,
   ModelInfo,
   ModelProgress,
   TimedText,
@@ -99,27 +103,37 @@ export const decodeHealth = (value: unknown): Health => {
   return { version, apiVersion: "2" }
 }
 
+const optionalBoolean = (
+  input: Record<string, unknown>,
+  key: string,
+): { readonly ok: boolean; readonly value?: boolean } => {
+  if (input[key] === undefined) return { ok: true }
+  const value = boolean(input[key])
+  return value === undefined ? { ok: false } : { ok: true, value }
+}
+
 export const decodeCapabilities = (value: unknown): Capabilities => {
   const input = record(value)
-  const outputProcessing = input && (input.outputProcessing === undefined
-    ? undefined
-    : boolean(input.outputProcessing))
   if (
     !Array.isArray(input?.audioFormats)
     || input.audioFormats.length !== 1
     || input.audioFormats[0] !== "audio/wav"
     || input.partialTranscripts !== false
     || typeof input.serviceCapture !== "boolean"
-    || (input.outputProcessing !== undefined && outputProcessing === undefined)
   ) return invalid("capabilities response")
-  return outputProcessing === undefined
-    ? { audioFormats: ["audio/wav"], partialTranscripts: false, serviceCapture: input.serviceCapture }
-    : {
-      audioFormats: ["audio/wav"],
-      partialTranscripts: false,
-      serviceCapture: input.serviceCapture,
-      outputProcessing,
-    }
+  // Optional fields arrived after the first release; an older host omits them.
+  const optional: Record<string, boolean> = {}
+  for (const key of ["outputProcessing", "streams", "dictationPartials"] as const) {
+    const field = optionalBoolean(input, key)
+    if (!field.ok) return invalid("capabilities response")
+    if (field.value !== undefined) optional[key] = field.value
+  }
+  return {
+    audioFormats: ["audio/wav"],
+    partialTranscripts: false,
+    serviceCapture: input.serviceCapture,
+    ...optional,
+  }
 }
 
 export const decodeDictationStart = (value: unknown): {
@@ -286,4 +300,139 @@ export const decodeProgress = (value: unknown): ModelProgress | "ok" => {
     default:
       return invalid("model progress event")
   }
+}
+
+const decodeSampleFormat = (value: unknown): StreamSampleFormat | undefined =>
+  value === "f32le" || value === "s16le" ? value : undefined
+
+const nonNegativeInteger = (value: unknown): number | undefined => {
+  const decoded = number(value)
+  return decoded !== undefined && Number.isInteger(decoded) && decoded >= 0 ? decoded : undefined
+}
+
+const decodeModelId = (value: unknown): ModelId | undefined => {
+  const id = string(value)
+  return id !== undefined && isModelId(id) ? id : undefined
+}
+
+export interface StreamStart {
+  readonly id: number
+  readonly ownerToken: string
+  readonly model: ModelId
+  readonly language: string
+  readonly sampleFormat: StreamSampleFormat
+  readonly partials: boolean
+  readonly leaseMs: number
+}
+
+export const decodeStreamStart = (value: unknown): StreamStart => {
+  const input = record(value)
+  const id = input && nonNegativeInteger(input.id)
+  const ownerToken = input && string(input.ownerToken)
+  const model = input && decodeModelId(input.model)
+  const language = input && string(input.language)
+  const sampleFormat = input && decodeSampleFormat(input.sampleFormat)
+  const partials = input && boolean(input.partials)
+  const leaseMs = input && nonNegativeInteger(input.leaseMs)
+  if (
+    id === undefined
+    || id <= 0
+    || ownerToken === undefined
+    || ownerToken.length < 32
+    || model === undefined
+    || language === undefined
+    || input?.sampleRate !== 16_000
+    || sampleFormat === undefined
+    || partials === undefined
+    || leaseMs === undefined
+    || leaseMs === 0
+  ) return invalid("stream create response")
+  return { id, ownerToken, model, language, sampleFormat, partials, leaseMs }
+}
+
+const decodeStreamSegment = (value: unknown): StreamSegment | undefined => {
+  const input = record(value)
+  const segment = input && nonNegativeInteger(input.segment)
+  const startMs = input && nonNegativeInteger(input.startMs)
+  const endMs = input && nonNegativeInteger(input.endMs)
+  const text = input && string(input.text)
+  if (segment === undefined || startMs === undefined || endMs === undefined || endMs < startMs || text === undefined) {
+    return undefined
+  }
+  return { segment, startMs, endMs, text }
+}
+
+const decodeStreamSegments = (value: unknown): readonly StreamSegment[] | undefined => {
+  if (!Array.isArray(value)) return undefined
+  const segments: StreamSegment[] = []
+  for (const item of value) {
+    const segment = decodeStreamSegment(item)
+    if (segment === undefined) return undefined
+    segments.push(segment)
+  }
+  return segments
+}
+
+export const decodeStreamResult = (value: unknown): StreamResult => {
+  const input = record(value)
+  const text = input && string(input.text)
+  const segments = input && decodeStreamSegments(input.segments)
+  const durationMs = input && nonNegativeInteger(input.durationMs)
+  const processed = input && (input.processed === undefined ? undefined : string(input.processed))
+  if (
+    text === undefined
+    || segments === undefined
+    || durationMs === undefined
+    || (input?.processed !== undefined && processed === undefined)
+  ) return invalid("stream finish response")
+  return { text, segments, durationMs, ...(processed === undefined ? {} : { processed }) }
+}
+
+export const decodeStreamEvent = (value: unknown): StreamEvent => {
+  const input = record(value)
+  switch (input?.type) {
+    case "ready": {
+      const id = nonNegativeInteger(input.id)
+      const model = decodeModelId(input.model)
+      const language = string(input.language)
+      const sampleFormat = decodeSampleFormat(input.sampleFormat)
+      const partials = boolean(input.partials)
+      if (
+        id === undefined
+        || model === undefined
+        || language === undefined
+        || sampleFormat === undefined
+        || partials === undefined
+      ) break
+      return { type: "ready", id, model, language, sampleFormat, partials }
+    }
+    case "partial": {
+      const segment = nonNegativeInteger(input.segment)
+      const stable = string(input.stable)
+      const tentative = string(input.tentative)
+      if (segment === undefined || stable === undefined || tentative === undefined) break
+      return { type: "partial", segment, stable, tentative }
+    }
+    case "segment": {
+      const segment = decodeStreamSegment(input)
+      if (segment === undefined) break
+      return { type: "segment", ...segment }
+    }
+    case "final": {
+      const text = string(input.text)
+      const segments = decodeStreamSegments(input.segments)
+      const durationMs = nonNegativeInteger(input.durationMs)
+      if (text === undefined || segments === undefined || durationMs === undefined) break
+      return { type: "final", text, segments, durationMs }
+    }
+    case "error": {
+      const code = string(input.code)
+      const message = string(input.message)
+      if (code === undefined || message === undefined) break
+      return { type: "error", code, message }
+    }
+    case "cancelled":
+      return { type: "cancelled" }
+  }
+  return invalid("stream event")
 }

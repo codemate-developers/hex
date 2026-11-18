@@ -369,6 +369,13 @@ impl Scan {
 }
 
 /// The Dot scope simulation.
+/// The most level bars the Bars style draws, and their pitch, pt: each bar
+/// is half the pitch wide.
+pub const BARS: usize = 13;
+pub const BAR_PITCH: f32 = 6.0;
+/// How much older the voice each bar out from the middle shows, s.
+const BAR_DELAY: f32 = 0.07;
+
 pub struct Scope {
     tuning: Tuning,
     stage: Stage,
@@ -506,6 +513,33 @@ impl Scope {
     /// Each dot's (brightness, freshness), row by row.
     pub fn dots(&self) -> &[[f32; 2]] {
         &self.dots
+    }
+
+    /// The Bars style's (height, brightness) per bar, 0–1, left to right.
+    /// Recording, each bar shows the voice [`BAR_DELAY`] older than its
+    /// neighbour nearer the middle, from the trace Dot scope draws; working,
+    /// the bars rest low while a light sweeps across them.
+    pub fn bars(&self) -> [[f32; 2]; BARS] {
+        let pose = self.pose();
+        let working = pose.cool.clamp(0.0, 1.0);
+        let middle = (BARS as f32 - 1.0) * 0.5;
+        let head = (pose.clock * 0.9).fract() * (BARS as f32 + 4.0) - 2.0;
+        let mut bars = [[0.0; 2]; BARS];
+        for (i, bar) in bars.iter_mut().enumerate() {
+            let from_middle = (i as f32 - middle).abs();
+            // Loudness reads as its square root, so ordinary speech moves
+            // the bars, as the notch indicator's do.
+            let heard = self.traces[0]
+                .past(from_middle * BAR_DELAY, 0)
+                .clamp(0.0, 1.0)
+                .sqrt();
+            let falloff = 1.0 - 0.05 * from_middle;
+            let lit = (1.0 - (i as f32 - head).abs() / 2.0).max(0.0);
+            let recording = [0.14 + 0.86 * heard * falloff, falloff];
+            let resting = [0.18 + 0.12 * lit, 0.35 + 0.65 * lit];
+            *bar = [0, 1].map(|k| recording[k] + (resting[k] - recording[k]) * working);
+        }
+        bars
     }
 
     pub fn pose(&self) -> Pose {
@@ -1046,6 +1080,60 @@ mod tests {
         let pose = scope.pose();
         assert!(pose.cool > 0.99);
         assert!((pose.width - 76.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn bars_follow_the_voice_outward_and_rest_under_a_sweep_while_working() {
+        let mut scope = Scope::new(fixed());
+        run(&mut scope, 1.0, recording(0.0));
+        let quiet = scope.bars();
+        run(&mut scope, 1.0, recording(0.9));
+        let loud = scope.bars();
+        let middle = BARS / 2;
+        assert!(
+            loud[middle][0] > quiet[middle][0] + 0.3,
+            "{quiet:?} {loud:?}"
+        );
+        assert!(loud.iter().all(|[height, _]| (0.0..=1.0).contains(height)));
+        // The middle shows the newest voice: just after the voice stops it
+        // falls first while the outer bars still hold the older, loud one.
+        run(&mut scope, 0.3, recording(0.0));
+        let after = scope.bars();
+        assert!(after[0][0] > after[middle][0], "{after:?}");
+
+        run(
+            &mut scope,
+            1.0,
+            Frame {
+                stage: Stage::Processing,
+                ..recording(0.0)
+            },
+        );
+        let working = scope.bars();
+        assert!(
+            working.iter().all(|[height, _]| *height < 0.31),
+            "{working:?}"
+        );
+        let brightest = working
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1[1].total_cmp(&b.1[1]))
+            .map(|(i, _)| i);
+        run(
+            &mut scope,
+            0.3,
+            Frame {
+                stage: Stage::Processing,
+                ..recording(0.0)
+            },
+        );
+        let later = scope
+            .bars()
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1[1].total_cmp(&b.1[1]))
+            .map(|(i, _)| i);
+        assert_ne!(brightest, later, "the light moves across the bars");
     }
 
     #[test]

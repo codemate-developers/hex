@@ -921,6 +921,7 @@ fn status(
         memory_footprint_bytes: control::memory_footprint(),
         listener: ListenerReport {
             running: published.listener.running,
+            shortcut_backend: "registered".into(),
             status: if microphone_unavailable {
                 "No microphone".into()
             } else {
