@@ -16,7 +16,13 @@ name: Toolbox helper
 # Executables come from build-desktop.yml as test builds (HEX_TEST_BUILD), so
 # they never update themselves. macOS needs a signed, notarized helper and is
 # not built here yet.
+#
+# Release a commit by pushing its tag (GitHub dispatches workflows only from
+# the default branch, which tracks upstream):
+#   git tag toolbox-$(git rev-parse --short=12 HEAD) && git push <fork> <that tag>
 on:
+  push:
+    tags: ["toolbox-*"]
   workflow_dispatch:
     inputs:
       ref:
@@ -45,8 +51,15 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - id: resolve
+        env:
+          PUSHED_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
           short=$(git rev-parse --short=12 HEAD)
+          # A pushed tag names the commit it releases.
+          if [ -n "$PUSHED_TAG" ] && [ "$PUSHED_TAG" != "toolbox-$short" ]; then
+            echo "::error::tag $PUSHED_TAG must be toolbox-$short, the commit it points at"
+            exit 1
+          fi
           {
             echo "sha=$(git rev-parse HEAD)"
             echo "short=$short"
