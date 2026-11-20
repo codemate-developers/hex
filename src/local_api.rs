@@ -757,7 +757,7 @@ fn route(request: HttpRequest, context: &HttpContext) -> RequestAction {
     if request.method == "POST" && path == "/control" {
         return json_post_action(
             request,
-            context.control.is_some(),
+            true, // Microphone discovery does not need a desktop control host.
             "control-unavailable",
             MAX_CONTROL_BYTES,
             "control-too-large",
@@ -1058,6 +1058,12 @@ fn control(
     };
     if let Err(error) = crate::control::check_version(&request) {
         return HttpResponse::json(200, &ControlResponse::from(ControlReply::from(error)));
+    }
+    if matches!(
+        request.command,
+        crate::control::ControlCommand::MicrophoneList
+    ) {
+        return HttpResponse::json(200, &ControlResponse::from(crate::control::microphones()));
     }
     let Some(controls) = controls else {
         return HttpResponse::code(404, "control-unavailable");
@@ -1816,6 +1822,41 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200"));
         assert_eq!(response_body(&response), r#"{"status":"ok"}"#);
 
+        api.shutdown();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn microphone_discovery_does_not_need_a_desktop_control_host() {
+        let directory = temp_directory();
+        let events = EventLog::create(&directory.join("events.ndjson")).unwrap();
+        let mut api = start_unpublished(events, LocalApiOptions::service()).unwrap();
+        let post = |token: &str, body: &str| {
+            raw_request(
+                api.document.port,
+                &format!(
+                    "POST /control HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                ),
+            )
+        };
+        let body = r#"{"version":4,"command":"microphone-list"}"#;
+        assert!(post("wrong", body).starts_with("HTTP/1.1 401"));
+        let response = post(&api.document.token, body);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let reply: crate::control::ControlResponse =
+            serde_json::from_str(response_body(&response)).unwrap();
+        // Enumeration may be unavailable on a headless machine; either result
+        // must come from discovery, rather than the absent desktop host.
+        match reply.reply {
+            crate::control::ControlReply::Microphones { .. } => {}
+            crate::control::ControlReply::Error { code, .. } => assert_eq!(code, "unavailable"),
+            reply => panic!("unexpected device reply: {reply:?}"),
+        }
+        assert!(
+            post(&api.document.token, r#"{"version":4,"command":"status"}"#)
+                .starts_with("HTTP/1.1 404")
+        );
         api.shutdown();
         fs::remove_dir_all(directory).unwrap();
     }

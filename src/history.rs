@@ -301,11 +301,15 @@ impl HistoryStore {
     pub fn open(path: PathBuf, retention: HistoryRetention, now_ms: u64) -> Self {
         let mut store = Self {
             recordings: recordings::directory(&path),
-            recording_cap: recordings::MAX_RECORDING_BYTES,
+            recording_cap: if crate::toolbox::enabled() {
+                0
+            } else {
+                recordings::MAX_RECORDING_BYTES
+            },
             path,
             entries: Vec::new(),
             next_id: 1,
-            retention,
+            retention: crate::toolbox::history_retention(retention),
             prune_pending: false,
             prune_error_reported: false,
             file_state: None,
@@ -401,12 +405,16 @@ impl HistoryStore {
         }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        let recording_bytes = draft.recording.as_ref().map_or(0, |recording| {
-            recordings::write(&self.recordings, id, recording).unwrap_or_else(|error| {
-                tracing::warn!(%error, "could not keep the dictation's recording");
-                0
-            })
-        });
+        let recording_bytes = draft
+            .recording
+            .as_ref()
+            .filter(|_| !crate::toolbox::enabled())
+            .map_or(0, |recording| {
+                recordings::write(&self.recordings, id, recording).unwrap_or_else(|error| {
+                    tracing::warn!(%error, "could not keep the dictation's recording");
+                    0
+                })
+            });
         self.entries.push(HistoryEntry {
             id,
             timestamp_ms: now_ms,
@@ -565,6 +573,7 @@ impl HistoryStore {
     /// history off stops recording but keeps existing entries until they are
     /// deleted explicitly.
     pub fn set_retention(&mut self, retention: HistoryRetention, now_ms: u64) -> io::Result<()> {
+        let retention = crate::toolbox::history_retention(retention);
         if self.retention == retention {
             return Ok(());
         }

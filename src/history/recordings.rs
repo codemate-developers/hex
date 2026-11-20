@@ -36,7 +36,8 @@ impl Recording {
     /// A copy of `samples` while Labs › Keep recordings is on; nothing
     /// otherwise, so dictation audio is never kept by default.
     pub fn keep(samples: &[f32]) -> Option<Self> {
-        (crate::labs::keep_recordings() && !samples.is_empty()).then(|| Self(samples.to_vec()))
+        (!crate::toolbox::enabled() && crate::labs::keep_recordings() && !samples.is_empty())
+            .then(|| Self(samples.to_vec()))
     }
 
     #[cfg(test)]

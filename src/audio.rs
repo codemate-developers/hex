@@ -1372,6 +1372,9 @@ fn open_selected<T>(
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InputDevices {
     pub names: Vec<String>,
+    /// Enumeration resolves an input or stand-in; this does not open a stream
+    /// or establish microphone permission.
+    pub system_default_available: bool,
     /// The input System default captures from. Linux's ALSA default has no
     /// useful name, so it is `None` there.
     pub system_default: Option<String>,
@@ -1446,6 +1449,7 @@ pub fn input_devices() -> Result<InputDevices> {
     names.dedup();
     Ok(InputDevices {
         names,
+        system_default_available: plan.is_some(),
         system_default,
         default_is_hex_microphone,
         off_with_lid_closed,

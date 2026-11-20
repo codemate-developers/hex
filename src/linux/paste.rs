@@ -571,6 +571,11 @@ impl LinuxPaster {
         // Read as the paste commits, so the toggle applies at once. A kept
         // paste snapshots nothing and restores nothing, and an earlier
         // paste's pending restore stands down.
+        let shift = shift
+            || (crate::toolbox::enabled()
+                && crate::toolbox::terminal_application(
+                    crate::linux::context::capture(false).application.as_deref(),
+                ));
         let keep = crate::labs::keep_on_clipboard();
         self.paste_as(Mime::Text, text.as_bytes(), None, shift, keep)
     }

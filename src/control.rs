@@ -6,6 +6,8 @@
 //! here or in the app's own setters.
 
 pub mod cli;
+mod devices;
+pub(crate) use devices::{delete_history, microphones};
 #[cfg(all(debug_assertions, target_os = "macos"))]
 pub(crate) mod dashboard;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -126,6 +128,8 @@ pub enum ControlCommand {
         values: serde_json::Map<String, serde_json::Value>,
     },
     ModelList,
+    /// Enumerate native inputs without capture or model preparation.
+    MicrophoneList,
     ModelUse {
         model: String,
         #[serde(default)]
@@ -154,6 +158,9 @@ pub enum ControlCommand {
         play: bool,
     },
     HistoryClear,
+    HistoryDelete {
+        id: u64,
+    },
     CheckForUpdates,
     /// Report Launch at Login, or turn it on or off.
     LaunchAtLogin {
@@ -235,6 +242,12 @@ pub enum ControlReply {
     },
     Models {
         models: Vec<ModelInfo>,
+    },
+    Microphones {
+        names: Vec<String>,
+        system_default: Option<String>,
+        system_default_available: bool,
+        off_with_lid_closed: Option<String>,
     },
     Vocabulary {
         entries: Vec<VocabularyEntry>,

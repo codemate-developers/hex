@@ -289,6 +289,10 @@ impl Pump {
                 None
             }
             ControlCommand::HistoryClear => Some(reply_with(clear_history(&runtime))),
+            ControlCommand::HistoryDelete { id } => Some(reply_with(
+                crate::control::delete_history(runtime.history(), id),
+            )),
+            ControlCommand::MicrophoneList => Some(crate::control::microphones()),
             ControlCommand::LaunchAtLogin { enabled } => {
                 background(reply, move || launch_at_login(enabled));
                 None
