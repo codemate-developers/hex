@@ -53,6 +53,9 @@ fn persist_kind(samples: &[f32], kind: Kind) {
 }
 
 fn retention() -> Option<usize> {
+    if crate::toolbox::enabled() {
+        return None;
+    }
     std::env::var(RETENTION_ENV)
         .ok()
         .and_then(|value| value.parse().ok())

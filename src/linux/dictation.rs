@@ -1979,6 +1979,61 @@ mod tests {
     }
 
     #[test]
+    fn successful_paste_persists_text_application_time_and_model() {
+        use crate::history::{History, HistoryRetention, HistoryStore};
+        let directory = std::env::temp_dir().join(format!(
+            "hex-paste-history-{}-{}",
+            std::process::id(),
+            crate::history::now_ms()
+        ));
+        let path = directory.join("history.json");
+        let history = History::new(HistoryStore::open(
+            path.clone(),
+            HistoryRetention::Week,
+            crate::history::now_ms(),
+        ));
+        let output = DictationOutput::from_settings(&AppSettings::default(), Some(history));
+        let mut pasted = String::new();
+        let mut paste = |text: &str, _: bool, _: bool| -> Result<()> {
+            pasted = text.into();
+            Ok(())
+        };
+        let mut last = None;
+        let before = crate::history::now_ms();
+        output
+            .deliver(
+                "Ship it.".into(),
+                crate::dictation::DictationFlavour::Raw,
+                "en",
+                Some(&mut paste),
+                &mut last,
+                1_000,
+                50,
+                Instant::now(),
+                None,
+                None,
+                crate::dictation::context::ContextSnapshot {
+                    application: Some("Editor".into()),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(pasted, "Ship it.");
+        let entries = crate::history::read_snapshot(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].final_text, pasted);
+        assert_eq!(entries[0].application.as_deref(), Some("Editor"));
+        assert_eq!(entries[0].model, crate::history::dictation_model());
+        assert!(
+            entries[0].timestamp_ms >= before
+                && entries[0].timestamp_ms <= crate::history::now_ms()
+        );
+        assert!(!entries[0].has_recording());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn a_failed_paste_keeps_the_dictation_for_paste_last() {
         let text = "the dictation whose paste failed";
         let output = DictationOutput::from_settings(&AppSettings::default(), None);

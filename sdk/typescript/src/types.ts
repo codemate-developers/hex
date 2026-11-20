@@ -230,6 +230,9 @@ export interface StreamHandle {
 
 export type DesktopCommand =
   | { readonly command: "status" }
+  | { readonly command: "microphone-list" }
+  | { readonly command: "history-delete"; readonly id: number }
+  | { readonly command: "history-clear" }
   | { readonly command: "model-install"; readonly model: string; readonly language?: string }
   | { readonly command: "settings-apply"; readonly values: Readonly<Record<string, unknown>> }
   | { readonly command: "dictation"; readonly action: "start" | "stop" | "toggle" | "cancel" }
@@ -241,7 +244,7 @@ export interface DesktopReply {
 }
 
 export interface HexClient {
-  /** Hex desktop control; available in an app or an opted-in Toolbox desktop helper. */
+  /** Native controls. microphone-list also works in the transcription-only service. */
   control(command: DesktopCommand, options?: RequestOptions): Promise<DesktopReply>
   health(options?: RequestOptions): Promise<Health>
   capabilities(options?: RequestOptions): Promise<Capabilities>

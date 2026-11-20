@@ -225,6 +225,8 @@ fn command(host: &dyn Host, command: ControlCommand) -> ControlReply {
         }
         ControlCommand::OnboardingReset => host.onboarding_reset(),
         ControlCommand::HistoryClear => reply(clear_history(host)),
+        ControlCommand::HistoryDelete { id } => reply(super::delete_history(host.history(), id)),
+        ControlCommand::MicrophoneList => super::microphones(),
         ControlCommand::CheckForUpdates => reply(host.state().and_then(|state| {
             match state.update {
                 DesktopUpdateStatus::Managed => Err(ControlError::new(

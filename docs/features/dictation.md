@@ -2707,7 +2707,7 @@ The CodeMate fork accepts `HEX_TOOLBOX_EMBEDDED=1` with `hex service --embedded`
 an explicit `HEX_APPLICATION_SUPPORT_DIR`, and `HEX_TOOLBOX_SHORTCUT`.
 This opt-in starts the existing platform desktop host, shortcut listener,
 microphone/capture/transcription/output path, and shared Rune HUD. It uses
-Toggle mode, opens the microphone only during capture, and disables Paste Last's
+Tap mode by default, opens the microphone only during capture, and disables Paste Last's
 separate binding and unrelated capture/meeting/screenshot shortcuts. It has no Hex tray, settings window, updater, or login item.
 The authenticated endpoint is handed to the SDK on stdout, without publishing
 `local-api.json`; parent-pipe closure stops the runtime with a bounded exit.
@@ -2720,8 +2720,46 @@ versioned `/control` protocol for status, model preparation and configuration.
 Host-audio batch and streams share the listener's engine. `/dictations` still
 returns text without pasting; the shortcut/`dictation` control path pastes.
 
+`HEX_TOOLBOX_SHORTCUT_MODE` accepts `hold`, `tap` (default), or
+`hold_or_double_tap`: respectively Hold without lock, Toggle without lock, or
+Hold with double-tap lock. Each clears `double_tap_only`. Invalid modes fail
+startup. `HEX_TOOLBOX_MICROPHONE` saves the exact native device name; empty or
+unset follows System default, replacing any old saved selection.
+
+On Linux, this Toolbox host chooses Hex's existing Ctrl+Shift+V paste chord
+when the focused application is a recognized terminal emulator (including
+Ghostty, Kitty, Alacritty, Foot, GNOME Terminal, Konsole and WezTerm). Other
+applications retain Ctrl+V. Detection uses the native foreground application's
+identity at paste time, never its window title or the dictated text; unknown
+applications retain the ordinary chord. This is scoped to the Toolbox host;
+the ordinary Hex desktop's Terminal paste preference is unchanged. Check:
+`toolbox_recognises_terminal_applications_without_matching_titles`.
+
+`POST /control` with `{"version":4,"command":"microphone-list"}` enumerates
+native names without opening a recording or loading a model, including in the
+ordinary transcription-only embedded service. Its `status: "microphones"`
+reply includes `names`, `system_default` (nullable; Linux can have a default
+without a display name), `system_default_available`, and `off_with_lid_closed`.
+Availability means native resolution found an input, not that permission or
+opening it has been tested. Other desktop commands still need a desktop host;
+`capabilities.control` describes that desktop command host.
+
+Toolbox history is fixed to one week, including later retention changes through
+control. Successful pasted/printed results use the existing platform output
+path to `<HEX_APPLICATION_SUPPORT_DIR>/history.json`, with `timestamp_ms`,
+`application` when known, `model`, and final/raw text. Idle expiry uses the
+existing retention worker. Toolbox suppresses saved and diagnostic audio even
+if inherited settings/environment request them; opening its history removes
+previous kept recordings. `history-delete` takes a numeric `id` and returns
+the ordinary `done` reply with `changed: false` when absent; `history-clear`
+remains available. The ordinary Hex desktop keeps its existing retention and
+audio controls.
+
 Checks: `toolbox::tests::toolbox_uses_hex_shortcut_validation_and_toggle_capture`,
 SDK `desktop-control.test.ts`, and Toolbox's `tests/dictation.test.js`.
+Additional Rust checks cover all three mode mappings, exact microphone names,
+week expiry and audio suppression, native-query serialization and service
+availability, idempotent durable deletion, and the Linux paste-to-history path.
 These checks do not establish physical microphone behavior or signed macOS and
 Windows permission attribution; those require native platform smoke tests.
 

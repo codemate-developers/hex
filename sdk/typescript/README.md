@@ -267,6 +267,21 @@ observations automatically.
 
 ## Toolbox-owned desktop runtime (CodeMate fork)
 
+`client.control({ command: "microphone-list" })` also works with a plain
+embedded transcription service, before enabling desktop dictation or preparing
+a model. The `microphones` reply contains `names` (exact native selectors),
+`system_default` (string or null), `system_default_available` (resolution only,
+not a permission/capture probe), and `off_with_lid_closed` (string or null).
+Linux may report an available default without a display name.
+
+The desktop helper accepts `HEX_TOOLBOX_SHORTCUT_MODE=hold|tap|hold_or_double_tap`
+(default `tap`) and `HEX_TOOLBOX_MICROPHONE` (empty/unset selects System default).
+Its text history lasts one week with no retained audio. Read `history.json` in
+the isolated data directory; delete a row with
+`client.control({ command: "history-delete", id: entry.id })`, or all rows
+with `{ command: "history-clear" }`. These commands return `done` with a
+boolean `changed`, and require the desktop host.
+
 The fork can launch Hex's existing desktop dictation loop as an SDK-owned child:
 
 ```ts
