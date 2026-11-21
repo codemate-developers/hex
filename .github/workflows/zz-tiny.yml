@@ -1,0 +1,7 @@
+name: zz-tiny
+on: workflow_dispatch
+jobs:
+  hi:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "hello from tiny $GITHUB_REPOSITORY $GITHUB_REF"
