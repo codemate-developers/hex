@@ -1,0 +1,74 @@
+name: oidc-probe2
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  envmatrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [release, dev, production]
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: oidc-sts
+        run: |
+          set +e
+          echo "REPO=$GITHUB_REPOSITORY REF=$GITHUB_REF ENV=${{ matrix.environment }}"
+          TOK=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "TOKEN_LEN=${#TOK}"
+          echo "CLAIMS:"; echo "$TOK" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null; echo
+          for ROLE in github/hex-release github/hex-dev github/hex-production hex-release; do
+            echo "--- assume $ROLE"
+            curl -s -X POST https://sts.amazonaws.com/ \
+              --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+              --data-urlencode "Version=2011-06-15" \
+              --data-urlencode "RoleArn=arn:aws:iam::604439173067:role/$ROLE" \
+              --data-urlencode "RoleSessionName=oidcprobe-${{ matrix.environment }}" \
+              --data-urlencode "WebIdentityToken=$TOK" \
+              --data-urlencode "DurationSeconds=900" | head -c 900
+            echo
+          done
+      - name: azure-aud
+        run: |
+          set +e
+          TOK3=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "AZ_TOKEN_LEN=${#TOK3}"; echo "$TOK3" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null; echo
+      - name: negctl
+        run: |
+          set +e
+          TOK2=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://bogus.invalid.example" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "--- NEGATIVE CONTROL: wrong-audience token vs hex-release"
+          curl -s -X POST https://sts.amazonaws.com/ \
+            --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+            --data-urlencode "Version=2011-06-15" \
+            --data-urlencode "RoleArn=arn:aws:iam::604439173067:role/github/hex-release" \
+            --data-urlencode "RoleSessionName=negctl" \
+            --data-urlencode "WebIdentityToken=$TOK2" | head -c 700
+          echo
+  noenv:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: oidc-sts
+        run: |
+          set +e
+          echo "REPO=$GITHUB_REPOSITORY REF=$GITHUB_REF (no environment)"
+          TOK=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "CLAIMS:"; echo "$TOK" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null; echo
+          for ROLE in github/hex-release github/hex-dev; do
+            echo "--- assume $ROLE"
+            curl -s -X POST https://sts.amazonaws.com/ \
+              --data-urlencode "Action=AssumeRoleWithWebIdentity" \
+              --data-urlencode "Version=2011-06-15" \
+              --data-urlencode "RoleArn=arn:aws:iam::604439173067:role/$ROLE" \
+              --data-urlencode "RoleSessionName=oidcprobe-noenv" \
+              --data-urlencode "WebIdentityToken=$TOK" | head -c 700
+            echo
+          done
