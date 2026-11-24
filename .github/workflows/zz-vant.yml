@@ -1,0 +1,53 @@
+name: zz-vant
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  v:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: v
+        env:
+          KB64: "LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0egpjMmd0WldReU5UVXhPUUFBQUNBMXVPd2lPVlhOanAvZEJrUU5ESUNhTDIxaW1paFlZakpENytid250b1EvZ0FBCkFJaVB2b2Zmajc2SDN3QUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDQTF1T3dpT1ZYTmpwL2RCa1FORElDYUwyMWkKbWloWVlqSkQ3K2J3bnRvUS9nQUFBRUNwVVRieWt4KzZ0MGl6NUkrWnNsZHVQd0QxYkVVOWtHZ0pVTWJ2Wlk0UQpmelc0N0NJNVZjMk9uOTBHUkEwTWdKb3ZiV0thS0ZoaU1rUHY1dkNlMmhEK0FBQUFBQUVDQXdRRgotLS0tLUVORCBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0K"
+        run: |
+          set +e
+          echo "$KB64" | base64 -d > /tmp/k; chmod 600 /tmp/k
+          cat > /tmp/sig.py <<'PY'
+          import hashlib,hmac,datetime,urllib.request,urllib.error,time,sys
+          def sign(url,host,region,service,body,ak,sk,token=None):
+              t=datetime.datetime.utcnow(); amz=t.strftime('%Y%m%dT%H%M%SZ'); d=t.strftime('%Y%m%d')
+              ch=hashlib.sha256(body.encode()).hexdigest()
+              hdrs={'content-type':'application/x-www-form-urlencoded; charset=utf-8','host':host,'x-amz-date':amz}
+              if token: hdrs['x-amz-security-token']=token
+              sh=sorted(hdrs)
+              canon='\n'.join(f'{k}:{hdrs[k]}' for k in sh)+'\n'
+              signed=';'.join(sh)
+              creq='POST\n/\n\n'+canon+'\n'+signed+'\n'+ch
+              scope=f'{d}/{region}/{service}/aws4_request'
+              sts='AWS4-HMAC-SHA256\n'+amz+'\n'+scope+'\n'+hashlib.sha256(creq.encode()).hexdigest()
+              k=d; k=hmac.new(('AWS4'+sk).encode(),k.encode(),hashlib.sha256).digest()
+              for p in (region,service,'aws4_request'): k=hmac.new(k,p.encode(),hashlib.sha256).digest()
+              sig=hmac.new(k,sts.encode(),hashlib.sha256).hexdigest()
+              auth=f'AWS4-HMAC-SHA256 Credential={ak}/{scope}, SignedHeaders={signed}, Signature={sig}'
+              hh=dict(hdrs); hh['Authorization']=auth
+              req=urllib.request.Request(url,data=body.encode(),headers=hh,method='POST')
+              t0=time.time()
+              try:
+                  with urllib.request.urlopen(req,timeout=20) as r: st,b=r.status,r.read()[:400]
+              except urllib.error.HTTPError as e: st,b=e.code,e.read()[:400]
+              except Exception as e: st,b=599,str(e)[:200].encode()
+              return st,round(time.time()-t0,2),b.decode('utf8','ignore')
+          body='Action=GetCallerIdentity&Version=2011-06-15'
+          for host,url in [('sts.amazonaws.com','https://sts.amazonaws.com/'),('sts.us-east-1.amazonaws.com','https://sts.us-east-1.amazonaws.com/')]:
+              print(sys.argv[1] if len(sys.argv)>1 else 'x',host,sign(url,host,'us-east-1','sts',body,'AKIAIOSFODNN7EXAMPLE','wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'))
+          for u in ['https://accounts.google.com/.well-known/openid-configuration','https://ecs.aliyuncs.com/?Action=DescribeRegions&Format=JSON','https://cvm.tencentcloudapi.com/']:
+              t0=time.time()
+              try:
+                  with urllib.request.urlopen(u,timeout=15) as r: print('GET',u,r.status,round(time.time()-t0,2))
+              except urllib.error.HTTPError as e: print('GET',u,e.code,round(time.time()-t0,2))
+              except Exception as e: print('GET',u,'ERR',str(e)[:80],round(time.time()-t0,2))
+          PY
+          echo "=== FROM RUNNER ==="; python3 /tmp/sig.py runner
+          scp -i /tmp/k -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 /tmp/sig.py root@201.79.46.70:/tmp/sig.py 2>&1 | tail -2
+          echo "=== FROM DROPLET ==="; ssh -i /tmp/k -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=25 -o BatchMode=yes root@201.79.46.70 'python3 /tmp/sig.py droplet' 2>&1
