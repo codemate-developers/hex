@@ -1,0 +1,29 @@
+name: zz-oidc-ctl
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  ctl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: differential
+        run: |
+          set +e
+          TOK=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "TOKEN_LEN=${#TOK}"
+          post() {
+            echo "--- CASE $1"
+            curl -s -m 30 -X POST "https://login.microsoftonline.com/9b5f061d-b051-45a6-8fc9-5a059bd097c5/oauth2/v2.0/token" \
+              --data-urlencode "client_id=4d94def0-8f43-475b-b3ec-94cf23e396f4" \
+              --data-urlencode "scope=https://management.azure.com/.default" \
+              --data-urlencode "grant_type=client_credentials" \
+              --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+              --data-urlencode "client_assertion=$2" | head -c 400
+            echo
+          }
+          post valid-gh-oidc-jwt "$TOK"
+          post garbage-not-a-jwt "not.a.jwt"
+          post truncated-jwt "$(echo "$TOK" | cut -c1-40)"
+          post tampered-sig "$(echo "$TOK" | sed 's/\.[^.]*$/.AAAA/')"
+          post empty-assertion ""
